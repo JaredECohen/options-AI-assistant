@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 
@@ -28,14 +29,21 @@ class RateLimiter:
 
 class LLMService:
     def __init__(self):
+        self.logger = logging.getLogger("app.llm")
         self.max_output_tokens = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "800"))
         self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
         cache_ttl = int(os.getenv("CACHE_TTL_SECONDS", "900"))
         self.cache = TTLCache(maxsize=256, ttl=cache_ttl)
         self.rate_limiter = RateLimiter(int(os.getenv("RATE_LIMIT_PER_MIN", "30")))
 
-        deterministic = os.getenv("EVAL_DETERMINISTIC", "0") == "1"
-        self.provider = HeuristicProvider() if deterministic else build_llm_provider()
+        self.deterministic = os.getenv("EVAL_DETERMINISTIC", "0") == "1"
+        self.provider = HeuristicProvider() if self.deterministic else build_llm_provider()
+        self.provider_name = getattr(self.provider, "name", "unknown")
+        self.logger.info(
+            "LLM provider initialized | provider=%s | deterministic=%s",
+            self.provider_name,
+            self.deterministic,
+        )
 
     async def generate(self, user_text: str) -> str:
         key = (SYSTEM_PROMPT, user_text, self.max_output_tokens, self.temperature)

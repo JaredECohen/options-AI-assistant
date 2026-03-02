@@ -8,15 +8,9 @@ from app.core.payoff import compute_payoff
 from app.core.safety import (
     apply_backstop,
     ensure_sections,
-    guarantee_misconception_template,
     illegal_refusal_template,
     is_illegal_request,
-    is_strike_request,
-    is_trade_recommendation_request,
-    needs_refusal,
     off_topic_template,
-    safe_refusal_template,
-    strike_refusal_template,
 )
 from app.core.strategies import STRATEGIES, ALIASES, get_strategy, normalize_strategy_name
 from app.models import ChatRequest, ChatResponse, OptionLeg, StockLeg
@@ -67,263 +61,12 @@ class ChatService:
             self._record_turn(session_id, user_text, response.response_text, req, kind="strategy")
             return response
 
-        if "guaranteed profit" in user_text.lower():
-            self._log("Guarantee misconception", session_id=session_id)
-            response_text = guarantee_misconception_template()
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="refusal")
-            return ChatResponse(response_text=response_text)
-
         if is_illegal_request(user_text):
             self._log("Illegal request", session_id=session_id)
             response_text = illegal_refusal_template()
             if mode == "freeform":
                 response_text = to_freeform(response_text)
             self._record_turn(session_id, user_text, response_text, req, kind="refusal")
-            return ChatResponse(response_text=response_text)
-
-        if needs_refusal(user_text):
-            self._log("Refusal", session_id=session_id)
-            response_text = safe_refusal_template()
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="refusal")
-            return ChatResponse(response_text=response_text)
-
-        greek_terms = extract_greek_terms(user_text)
-        if greek_terms:
-            if "convexity" in greek_terms:
-                strategies = extract_strategies(user_text)
-                if strategies:
-                    response_text = (
-                        format_convexity_for_strategy_freeform(strategies[0])
-                        if mode == "freeform"
-                        else format_convexity_for_strategy_structured(strategies[0])
-                    )
-                    self._record_turn(session_id, user_text, response_text, req, kind="convexity")
-                    return ChatResponse(response_text=response_text)
-                if len(greek_terms) == 1:
-                    response_text = format_convexity_freeform() if mode == "freeform" else format_convexity_structured()
-                    self._record_turn(session_id, user_text, response_text, req, kind="convexity")
-                    return ChatResponse(response_text=response_text)
-            if len(greek_terms) == 1:
-                term = greek_terms[0]
-                response_text = (
-                    format_greek_freeform(term) if mode == "freeform" else format_greek_structured(term)
-                )
-                self._record_turn(session_id, user_text, response_text, req, kind="greek")
-                return ChatResponse(response_text=response_text)
-            response_text = (
-                format_greek_comparison_freeform(greek_terms)
-                if mode == "freeform"
-                else format_greek_comparison_structured(greek_terms)
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="greek_compare")
-            return ChatResponse(response_text=response_text)
-
-        short_vol = is_short_vol_request(user_text)
-        view = detect_view_from_text(user_text) or (req.view or "").lower() or None
-        view_hint = detect_view_from_history(history)
-        if view and view != "short_vol":
-            view_hint = None
-        if short_vol:
-            view = "short_vol"
-        if not view and view_hint and wants_view_based_suggestions(user_text):
-            view = view_hint
-
-        if is_horizon_only(user_text):
-            income_ctx = detect_income_from_history(history)
-            follow_view = view or view_hint or ("short_vol" if income_ctx else None)
-            if follow_view:
-                response_text = (
-                    income_view_suggestions_freeform(follow_view, user_text, history=history)
-                    if (income_ctx and mode == "freeform")
-                    else income_view_suggestions_structured(follow_view, user_text, history=history)
-                    if income_ctx
-                    else view_trade_suggestions_freeform(follow_view, user_text, view_hint=view_hint, history=history)
-                    if mode == "freeform"
-                    else view_trade_suggestions_structured(follow_view, user_text, view_hint=view_hint, history=history)
-                )
-                self._record_turn(session_id, user_text, response_text, req, kind="advice")
-                return ChatResponse(response_text=response_text)
-
-        if is_income_request(user_text) and not view:
-            response_text = (
-                income_menu_freeform(user_text)
-                if mode == "freeform"
-                else income_menu_structured(user_text)
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="advice")
-            return ChatResponse(response_text=response_text)
-
-        if is_income_request(user_text) and view:
-            response_text = (
-                income_view_suggestions_freeform(view, user_text, history=history)
-                if mode == "freeform"
-                else income_view_suggestions_structured(view, user_text, history=history)
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="advice")
-            return ChatResponse(response_text=response_text)
-
-        if is_view_menu_request(user_text):
-            if view:
-                response_text = format_view_menu(view)
-                if mode == "freeform":
-                    response_text = to_freeform(response_text)
-                self._record_turn(session_id, user_text, response_text, req, kind="view_menu")
-                return ChatResponse(response_text=response_text)
-            response_text = (
-                view_menu_prompt_freeform() if mode == "freeform" else view_menu_prompt_structured()
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="view_menu")
-            return ChatResponse(response_text=response_text)
-        if is_view_question(user_text):
-            strategies = extract_strategies(user_text)
-            if not strategies:
-                strategies = recent_strategies_from_history(history)
-            if strategies:
-                response_text = (
-                    format_strategy_view_freeform(strategies[0])
-                    if mode == "freeform"
-                    else format_strategy_view_structured(strategies[0])
-                )
-                self._record_turn(session_id, user_text, response_text, req, kind="view")
-                return ChatResponse(response_text=response_text)
-            response_text = (
-                format_view_clarify_freeform() if mode == "freeform" else format_view_clarify_structured()
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="view")
-            return ChatResponse(response_text=response_text)
-
-        if is_long_short_comparison_question(user_text):
-            response_text = (
-                format_long_short_comparison_freeform()
-                if mode == "freeform"
-                else format_long_short_comparison_structured()
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="mechanics")
-            return ChatResponse(response_text=response_text)
-
-        if is_payoff_mechanics_question(user_text):
-            strategies = extract_strategies(user_text)
-            if strategies:
-                response_text = (
-                    format_strategy_structured(strategies[0])
-                    if mode == "structured"
-                    else to_freeform(format_strategy_structured(strategies[0]))
-                )
-            else:
-                response_text = (
-                    format_payoff_mechanics_freeform()
-                    if mode == "freeform"
-                    else format_payoff_mechanics_structured()
-                )
-            self._record_turn(session_id, user_text, response_text, req, kind="mechanics")
-            return ChatResponse(response_text=response_text)
-
-        if is_trade_recommendation_request(user_text) or is_strike_request(user_text):
-            self._log("Trade/strike request", session_id=session_id, view=view)
-            if view:
-                response_text = (
-                    view_trade_suggestions_freeform(view, user_text, view_hint=view_hint, history=history)
-                    if mode == "freeform"
-                    else view_trade_suggestions_structured(view, user_text, view_hint=view_hint, history=history)
-                )
-            else:
-                response_text = strike_refusal_template()
-            if mode == "freeform":
-                response_text = response_text if view else to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="advice")
-            return ChatResponse(response_text=response_text)
-
-        if view and not mentions_strategy(user_text) and (wants_view_based_suggestions(user_text) or view == "short_vol"):
-            self._log("View strategy menu", session_id=session_id, view=view)
-            response_text = (
-                view_trade_suggestions_freeform(view, user_text, view_hint=view_hint, history=history)
-                if mode == "freeform"
-                else view_trade_suggestions_structured(view, user_text, view_hint=view_hint, history=history)
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="advice")
-            return ChatResponse(response_text=response_text)
-
-        basic_option = detect_basic_option_question(user_text)
-        if basic_option:
-            response_text = format_basic_option_structured(basic_option)
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="basic")
-            return ChatResponse(response_text=response_text)
-
-        if is_ambiguous_put_spread(user_text):
-            response_text = format_ambiguous_put_spread_structured()
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="strategy")
-            return ChatResponse(response_text=response_text)
-
-        if is_ambiguous_call_spread(user_text):
-            response_text = format_ambiguous_call_spread_structured()
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="strategy")
-            return ChatResponse(response_text=response_text)
-
-        if is_convexity_question(user_text):
-            strategies = extract_strategies(user_text)
-            if strategies:
-                response_text = (
-                    format_convexity_for_strategy_freeform(strategies[0])
-                    if mode == "freeform"
-                    else format_convexity_for_strategy_structured(strategies[0])
-                )
-            else:
-                response_text = format_convexity_freeform() if mode == "freeform" else format_convexity_structured()
-            if mode == "freeform" and response_text.startswith("Summary:"):
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="convexity")
-            return ChatResponse(response_text=response_text)
-
-        strategies = extract_strategies(user_text)
-        if strategies and is_strike_selection_question(user_text):
-            response_text = format_strike_selection_structured(strategies[0])
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="strategy")
-            return ChatResponse(response_text=response_text)
-        if not strategies and is_strike_selection_question(user_text):
-            recent = recent_strategies_from_history(history)
-            if recent:
-                response_text = format_strike_selection_structured(recent[0])
-                if mode == "freeform":
-                    response_text = to_freeform(response_text)
-                self._record_turn(session_id, user_text, response_text, req, kind="strategy")
-                return ChatResponse(response_text=response_text)
-            response_text = (
-                "Which strategy are you considering? Strike selection depends on the structure."
-                if mode == "freeform"
-                else ensure_sections("Tell me which strategy you mean so I can explain strike selection.")
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="strategy")
-            return ChatResponse(response_text=response_text)
-        if strategies and is_expiration_selection_question(user_text):
-            response_text = format_expiration_selection_structured(strategies[0])
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="strategy")
-            return ChatResponse(response_text=response_text)
-        if strategies:
-            if is_comparison_request(user_text) and len(strategies) >= 2:
-                response_text = (
-                    format_comparison_freeform(strategies)
-                    if mode == "freeform"
-                    else format_comparison_structured(strategies)
-                )
-            else:
-                response_text = format_strategy_structured(strategies[0])
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
-            self._record_turn(session_id, user_text, response_text, req, kind="strategy")
             return ChatResponse(response_text=response_text)
 
         if not is_options_related(user_text) and not history:
@@ -333,37 +76,8 @@ class ChatService:
             response_text = off_topic_template()
             return ChatResponse(response_text=response_text)
 
-        if is_choice_question(user_text):
-            recent_strats = recent_strategies_from_history(history)
-            if recent_strats:
-                view_hint = detect_view_from_text(user_text) or detect_view_from_history(history)
-                range_hint = extract_percent_range(user_text) or extract_percent_range(history_text(history))
-                horizon_hint = extract_horizon(user_text) or extract_horizon(history_text(history))
-                response_text = build_choice_response(
-                    recent_strats,
-                    view_hint=view_hint,
-                    range_hint=range_hint,
-                    horizon_hint=horizon_hint,
-                )
-                if mode == "freeform":
-                    response_text = response_text
-                else:
-                    response_text = ensure_sections(response_text)
-                self._record_turn(session_id, user_text, response_text, req, kind="choice")
-                return ChatResponse(response_text=response_text)
-
-        if needs_clarification(user_text):
-            response_text = (
-                clarifying_question_freeform(user_text)
-                if mode == "freeform"
-                else clarifying_question_structured()
-            )
-            self._record_turn(session_id, user_text, response_text, req, kind="clarify")
-            return ChatResponse(response_text=response_text)
-
         response_text = await self.llm_service.generate(build_context_message(user_text, req, history))
         response_text = apply_backstop(response_text)
-        response_text = ensure_sections(response_text)
         if mode == "freeform":
             response_text = to_freeform(response_text)
         self._record_turn(session_id, user_text, response_text, req, kind="answer")
@@ -2215,6 +1929,8 @@ def _name_phrase(name: str) -> str:
     lower = name.lower()
     if lower.startswith(("a ", "an ", "the ")):
         return lower
+    if lower in ("delta", "gamma", "theta", "vega", "rho", "convexity", "implied volatility"):
+        return lower
     return f"a {lower}"
 
 
@@ -2385,6 +2101,8 @@ def to_freeform_general(sections: dict) -> str:
                 "income-focused",
                 "income strategies",
                 "option payoffs",
+                "i can ",
+                "i focus ",
             )
         ):
             sentences.append(summary_clean + ".")
