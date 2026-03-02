@@ -10,6 +10,18 @@ class HeuristicProvider:
     async def generate(self, system: str, user: str, max_output_tokens: int, temperature: float) -> str:
         current_message = _extract_current_message(user)
         lower = current_message.lower()
+        percent_range = extract_percent_range(lower)
+        horizon = extract_horizon_text(lower)
+        if is_guaranteed_profit_request(lower):
+            return format_guaranteed_profit()
+        if is_price_target_request(lower):
+            return format_price_target_refusal()
+        if is_tax_advice_request(lower):
+            return format_tax_refusal()
+        if percent_range and any(term in lower for term in ["increase", "rise", "up", "gain", "appreciate"]):
+            return format_bullish_range_trade(percent_range, horizon)
+        if is_trade_recommendation_request(lower):
+            return format_view_horizon_prompt()
         if is_straddle_strangle_comparison(lower):
             return format_straddle_vs_strangle()
         if is_debit_credit_spread_question(lower):
@@ -97,7 +109,7 @@ def format_general_strike_selection() -> str:
         "while further OTM strikes are cheaper but need a larger move to pay off. For debit trades, the breakeven rises as you go "
         "further OTM; for credit trades, moving strikes further away typically lowers the credit but increases the cushion. "
         "Shorter expirations are cheaper but give less time; longer expirations cost more but give the thesis time to play out. "
-        "Tell me the strategy, time horizon, or target move and I can tailor the strike logic."
+        "Tell me the strategy, market view, or time horizon and I can tailor the strike logic."
     )
 
 
@@ -163,6 +175,112 @@ def format_vega_iv() -> str:
         "Vega measures how much an option's price changes when implied volatility (IV) changes. "
         "When IV rises, option premiums rise and long options benefit; when IV falls, premiums drop and long options suffer. "
         "Vega is larger for longer-dated and near-the-money options."
+    )
+
+
+def is_trade_recommendation_request(text: str) -> bool:
+    triggers = [
+        "best trade",
+        "best options trade",
+        "best strategy",
+        "what should i trade",
+        "recommend a trade",
+        "recommend a strategy",
+        "tell me what to buy",
+        "tell me what to buy and sell",
+        "what should i buy",
+        "what should i sell",
+        "pick strikes for me",
+        "best strike",
+    ]
+    return any(t in text for t in triggers)
+
+
+def format_view_horizon_prompt() -> str:
+    return (
+        "I can suggest ideas once I have your market view (bullish, bearish, neutral, or volatile) and time horizon. "
+        "Share your view and horizon and I'll map it to a best-fit strategy with % moneyness examples."
+    )
+
+
+def is_price_target_request(text: str) -> bool:
+    return "price target" in text or "target price" in text or "set a price target" in text
+
+
+def format_price_target_refusal() -> str:
+    return (
+        "I cannot predict price targets. If you want options-focused guidance, tell me your market view and time horizon "
+        "and I can explain strategies and trade-offs."
+    )
+
+
+def is_tax_advice_request(text: str) -> bool:
+    return "tax" in text and any(t in text for t in ["advice", "assignment", "treatment", "implications"])
+
+
+def format_tax_refusal() -> str:
+    return (
+        "I can't provide tax advice, but I can offer general education about options mechanics. "
+        "For tax questions, consider a qualified professional."
+    )
+
+
+def is_guaranteed_profit_request(text: str) -> bool:
+    return "guaranteed profit" in text or "guaranteed" in text and "profit" in text
+
+
+def format_guaranteed_profit() -> str:
+    return (
+        "Options strategies are not guaranteed; options involve risk and uncertainty. "
+        "If you share your market view and horizon, I can explain strategies and their trade-offs."
+    )
+
+
+def extract_percent_range(text: str) -> tuple[int, int] | None:
+    import re
+    match = re.search(r"(\d{1,2})\s*(?:to|-|–)\s*(\d{1,2})\s*%", text)
+    if match:
+        low = int(match.group(1))
+        high = int(match.group(2))
+        if low > high:
+            low, high = high, low
+        return low, high
+    match = re.search(r"(\d{1,2})\s*%\s*(?:to|-|–)\s*(\d{1,2})\s*%", text)
+    if match:
+        low = int(match.group(1))
+        high = int(match.group(2))
+        if low > high:
+            low, high = high, low
+        return low, high
+    match = re.search(r"(\d{1,2})\s*%\s*(?:and|&)\s*(\d{1,2})\s*%", text)
+    if match:
+        low = int(match.group(1))
+        high = int(match.group(2))
+        if low > high:
+            low, high = high, low
+        return low, high
+    match = re.search(r"(\d{1,2})\s*%", text)
+    if match:
+        val = int(match.group(1))
+        return val, val
+    return None
+
+
+def extract_horizon_text(text: str) -> str | None:
+    import re
+    match = re.search(r"(\\d+\\s*(?:day|week|month|year)s?)", text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def format_bullish_range_trade(range_pair: tuple[int, int], horizon: str | None) -> str:
+    low, high = range_pair
+    horizon_clause = f" over about {horizon}" if horizon else ""
+    return (
+        f"A bull call spread with a long call around {low}% OTM and a short call around {high}% OTM is a clean fit for a {low}-{high}% upside view{horizon_clause}. "
+        f"Alternatives include a long call around {low}% OTM or a bull put spread selling about {low}% OTM and buying about {high}% OTM. "
+        "These are educational % moneyness examples; share your exact horizon if you want a tighter fit."
     )
 
 

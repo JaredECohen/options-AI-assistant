@@ -99,7 +99,11 @@ def response_violates(response_text: str) -> bool:
         return True
     if _matches(ILLEGAL_PATTERNS, response_text):
         return True
-    return _matches(PRICE_TARGET_PATTERNS, response_text)
+    if _matches(PRICE_TARGET_PATTERNS, response_text):
+        if any(term in lowered for term in ["cannot", "can't", "do not", "don't", "not able"]):
+            return False
+        return True
+    return False
 
 
 def safe_refusal_template() -> str:

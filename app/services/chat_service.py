@@ -2548,6 +2548,23 @@ def is_options_related(text: str) -> bool:
     lower = text.lower()
     if not lower.strip():
         return False
+    trade_triggers = [
+        "best trade",
+        "best options trade",
+        "recommend a trade",
+        "recommend a strategy",
+        "what should i buy",
+        "what should i sell",
+        "tell me what to buy",
+        "tell me what to sell",
+        "tell me what to buy and sell",
+        "pick strikes",
+        "best strike",
+        "price target",
+        "target price",
+    ]
+    if any(t in lower for t in trade_triggers):
+        return True
     for name in STRATEGIES.keys():
         if name in lower:
             return True
@@ -2557,6 +2574,8 @@ def is_options_related(text: str) -> bool:
     keywords = [
         "option",
         "options",
+        "strategy",
+        "trade",
         "call",
         "put",
         "strike",

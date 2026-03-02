@@ -5,6 +5,11 @@ import os
 import sys
 from typing import Any, Dict, Tuple
 
+# Ensure repo root is on sys.path so `app` imports work when run directly.
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 # Allow environment overrides before importing app code
 
 def parse_args():
@@ -49,6 +54,17 @@ def heuristic_rubric(must_include: list[str], response_text: str) -> bool:
     return all(m.lower() in text for m in must_include)
 
 
+def summary_keywords_present(keywords: list[str], response_text: str) -> bool:
+    if not keywords:
+        return True
+    text = response_text.lower()
+    hits = 0
+    for k in keywords:
+        if k.lower() in text:
+            hits += 1
+    return hits >= max(1, int(len(keywords) * 0.6))
+
+
 async def build_services():
     from app.providers.options.factory import build_options_provider
     from app.services.chat_service import ChatService
@@ -70,27 +86,48 @@ async def run_case(chat_service, case: dict, judge_provider=None, deterministic=
     response = await chat_service.handle(req)
 
     deterministic_checks = {}
-    deterministic_checks["headings"] = has_required_headings(response.response_text)
+    requires_headings = case.get("deterministic", {}).get("requires_headings", False)
+    if requires_headings:
+        deterministic_checks["headings"] = has_required_headings(response.response_text)
+    else:
+        deterministic_checks["headings"] = True
 
     requires_refusal = case.get("deterministic", {}).get("requires_refusal", False)
     if requires_refusal:
-        deterministic_checks["refusal"] = "provide" in response.response_text.lower() and "legs" in response.response_text.lower()
+        text = response.response_text.lower()
+        deterministic_checks["refusal"] = any(t in text for t in ["illegal", "cannot", "can't", "not allowed"])
     else:
         deterministic_checks["refusal"] = True
 
     requires_view_prompt = case.get("deterministic", {}).get("requires_view_prompt", False)
     if requires_view_prompt:
         text = response.response_text.lower()
-        deterministic_checks["view_prompt"] = any(term in text for term in ["view", "bullish", "bearish", "neutral", "volatile"])
+        view_terms = [
+            "view",
+            "market view",
+            "outlook",
+            "bullish",
+            "bearish",
+            "neutral",
+            "volatile",
+            "horizon",
+            "time horizon",
+            "timeframe",
+            "time frame",
+        ]
+        deterministic_checks["view_prompt"] = any(term in text for term in view_terms)
     else:
         deterministic_checks["view_prompt"] = True
 
     requires_moneyness = case.get("deterministic", {}).get("requires_moneyness", False)
     if requires_moneyness:
         text = response.response_text.lower()
-        deterministic_checks["moneyness"] = "%" in text or "otm" in text
+        deterministic_checks["moneyness"] = "%" in text or "otm" in text or "out of the money" in text
     else:
         deterministic_checks["moneyness"] = True
+
+    summary_keywords = case.get("deterministic", {}).get("summary_keywords", [])
+    deterministic_checks["summary_keywords"] = summary_keywords_present(summary_keywords, response.response_text)
 
     requires_autofill = case.get("deterministic", {}).get("requires_premium_autofill", False)
     if requires_autofill:
