@@ -165,6 +165,19 @@ class ChatService:
             )
             self._record_turn(session_id, user_text, response_text, req, kind="advice")
             return ChatResponse(response_text=response_text)
+
+        if is_view_menu_request(user_text):
+            if view:
+                response_text = format_view_menu(view)
+                if mode == "freeform":
+                    response_text = to_freeform(response_text)
+                self._record_turn(session_id, user_text, response_text, req, kind="view_menu")
+                return ChatResponse(response_text=response_text)
+            response_text = (
+                view_menu_prompt_freeform() if mode == "freeform" else view_menu_prompt_structured()
+            )
+            self._record_turn(session_id, user_text, response_text, req, kind="view_menu")
+            return ChatResponse(response_text=response_text)
         if is_view_question(user_text):
             strategies = extract_strategies(user_text)
             if not strategies:
@@ -177,6 +190,20 @@ class ChatService:
                 )
                 self._record_turn(session_id, user_text, response_text, req, kind="view")
                 return ChatResponse(response_text=response_text)
+            response_text = (
+                format_view_clarify_freeform() if mode == "freeform" else format_view_clarify_structured()
+            )
+            self._record_turn(session_id, user_text, response_text, req, kind="view")
+            return ChatResponse(response_text=response_text)
+
+        if is_long_short_comparison_question(user_text):
+            response_text = (
+                format_long_short_comparison_freeform()
+                if mode == "freeform"
+                else format_long_short_comparison_structured()
+            )
+            self._record_turn(session_id, user_text, response_text, req, kind="mechanics")
+            return ChatResponse(response_text=response_text)
 
         if is_payoff_mechanics_question(user_text):
             strategies = extract_strategies(user_text)
@@ -262,6 +289,21 @@ class ChatService:
             response_text = format_strike_selection_structured(strategies[0])
             if mode == "freeform":
                 response_text = to_freeform(response_text)
+            self._record_turn(session_id, user_text, response_text, req, kind="strategy")
+            return ChatResponse(response_text=response_text)
+        if not strategies and is_strike_selection_question(user_text):
+            recent = recent_strategies_from_history(history)
+            if recent:
+                response_text = format_strike_selection_structured(recent[0])
+                if mode == "freeform":
+                    response_text = to_freeform(response_text)
+                self._record_turn(session_id, user_text, response_text, req, kind="strategy")
+                return ChatResponse(response_text=response_text)
+            response_text = (
+                "Which strategy are you considering? Strike selection depends on the structure."
+                if mode == "freeform"
+                else ensure_sections("Tell me which strategy you mean so I can explain strike selection.")
+            )
             self._record_turn(session_id, user_text, response_text, req, kind="strategy")
             return ChatResponse(response_text=response_text)
         if strategies and is_expiration_selection_question(user_text):
@@ -997,9 +1039,10 @@ def format_strategy_structured(strategy_name: str) -> str:
 
 def format_strike_selection_structured(strategy_name: str) -> str:
     name = normalize_strategy_name(strategy_name)
+    display = friendly_name(name)
     if name in ("bull call spread", "bear put spread"):
         return (
-            "Summary: Strike selection in a debit spread trades cost, breakeven, and the capped payoff range.\n"
+            f"Summary: Strike selection in a {display} (debit spread) trades cost, breakeven, and the capped payoff range.\n"
             "Setup: Closer-to-ATM long strikes cost more but need a smaller move; further OTM long strikes are cheaper but need a bigger move. A higher short strike widens the spread and raises max profit but increases the debit.\n"
             "Payoff at Expiration: A wider spread increases the payoff range; a tighter spread is cheaper but caps gains sooner.\n"
             "Max Profit: Strike width minus net debit; wider width raises max profit but typically costs more.\n"
@@ -1012,7 +1055,7 @@ def format_strike_selection_structured(strategy_name: str) -> str:
         )
     if name in ("bull put spread", "bear call spread"):
         return (
-            "Summary: Strike selection in a credit spread trades credit size against probability and tail risk.\n"
+            f"Summary: Strike selection in a {display} (credit spread) trades credit size against probability and tail risk.\n"
             "Setup: Short strikes closer to spot bring in more credit but increase assignment risk; further OTM short strikes reduce credit but provide more cushion. Wing width sets max loss.\n"
             "Payoff at Expiration: Profit if price stays beyond the short strike; moving strikes further OTM reduces credit but improves odds.\n"
             "Max Profit: Net credit; typically higher when the short strike is closer to spot.\n"
@@ -1025,7 +1068,7 @@ def format_strike_selection_structured(strategy_name: str) -> str:
         )
     if name in ("long call", "long put"):
         return (
-            "Summary: Strike choice for a long option trades premium cost against the move required to profit.\n"
+            f"Summary: Strike choice for a {display} trades premium cost against the move required to profit.\n"
             "Setup: A closer-to-ATM strike costs more but needs a smaller move; a further OTM strike is cheaper but needs a bigger move.\n"
             "Payoff at Expiration: Closer strikes reach intrinsic value sooner; further strikes require larger moves to finish ITM.\n"
             "Max Profit: Unlimited for long calls; large but bounded by zero for long puts.\n"
@@ -1038,7 +1081,7 @@ def format_strike_selection_structured(strategy_name: str) -> str:
         )
     if name in ("long straddle", "long strangle"):
         return (
-            "Summary: Strike selection in long volatility trades balances cost versus the size of move required.\n"
+            f"Summary: Strike selection in a {display} balances cost versus the size of move required.\n"
             "Setup: Straddles use the same (often ATM) strike; strangles use OTM strikes that are cheaper but further away.\n"
             "Payoff at Expiration: Straddles profit from smaller moves; strangles require larger moves to reach breakeven.\n"
             "Max Profit: Unlimited on the upside; large downside profit if the stock drops sharply (bounded by zero).\n"
@@ -1051,7 +1094,7 @@ def format_strike_selection_structured(strategy_name: str) -> str:
         )
     if name in ("short straddle", "short strangle", "iron condor", "iron butterfly"):
         return (
-            "Summary: Strike selection in short-volatility trades trades credit size against risk of a large move.\n"
+            f"Summary: Strike selection in a {display} trades credit size against risk of a large move.\n"
             "Setup: Short strikes closer to spot increase credit but raise the chance of losses; further OTM strikes reduce credit but widen the safe range. Wing width controls max loss for defined-risk structures.\n"
             "Payoff at Expiration: Profits if price stays within the range; closer strikes reduce the range but pay more.\n"
             "Max Profit: Net credit; higher when short strikes are closer to spot.\n"
@@ -1064,7 +1107,7 @@ def format_strike_selection_structured(strategy_name: str) -> str:
         )
     if name in ("covered call", "cash-secured put"):
         return (
-            "Summary: Strike choice trades income against assignment risk and upside/downside participation.\n"
+            f"Summary: Strike choice in a {display} trades income against assignment risk and upside/downside participation.\n"
             "Setup: Higher call strikes (covered call) or lower put strikes (cash-secured put) reduce premium but give more room; closer strikes pay more but increase assignment likelihood.\n"
             "Payoff at Expiration: Closer strikes cap upside sooner (covered call) or raise assignment risk (CSP); further strikes reduce income but give more cushion.\n"
             "Max Profit: Covered call is capped at strike plus premium; CSP max profit is the premium.\n"
@@ -1077,7 +1120,7 @@ def format_strike_selection_structured(strategy_name: str) -> str:
         )
     if name in ("collar", "protective put"):
         return (
-            "Summary: Strike choice in hedges trades protection cost against how much upside you keep.\n"
+            f"Summary: Strike choice in a {display} trades protection cost against how much upside you keep.\n"
             "Setup: A higher put strike provides more protection but costs more; a lower put strike is cheaper but leaves more downside. A lower call strike in a collar brings in more premium but caps upside sooner.\n"
             "Payoff at Expiration: Tighter protection reduces losses sooner but can cap gains more; looser protection is cheaper but less effective.\n"
             "Max Profit: Collar profits are capped at the call strike; protective put keeps upside minus the put cost.\n"
@@ -1090,7 +1133,7 @@ def format_strike_selection_structured(strategy_name: str) -> str:
         )
     if name in ("ratio spread", "backspread"):
         return (
-            "Summary: Strike selection in ratio and backspreads determines where risk concentrates and where convexity kicks in.\n"
+            f"Summary: Strike selection in a {display} determines where risk concentrates and where convexity kicks in.\n"
             "Setup: The short strike is where losses can concentrate; further OTM long strikes lower cost but require a bigger move to benefit.\n"
             "Payoff at Expiration: Closer long strikes improve responsiveness; further strikes increase convexity but need a larger move.\n"
             "Max Profit: Grows as the move exceeds the long strike; the extra long options drive convexity beyond the short strike.\n"
@@ -1101,8 +1144,21 @@ def format_strike_selection_structured(strategy_name: str) -> str:
             "Main Risks: Losses if price stalls near the short strike.\n"
             "Assumptions / What I need from you: Share target move size and preferred strike spacing for a more tailored explanation."
         )
+    if name in ("calendar spread", "diagonal spread"):
+        return (
+            f"Summary: Strike selection in a {display} trades directional bias against time-decay positioning.\n"
+            "Setup: A higher long strike leans more bullish; a lower long strike leans more bearish. The short strike typically sits near where you expect price to gravitate in the front month.\n"
+            "Payoff at Expiration: Closer short strikes increase near-term decay benefit; wider spacing shifts the break-even zone and directional bias.\n"
+            "Max Profit: Depends on how price behaves into the short expiration and how IV shifts; not a simple cap.\n"
+            "Max Loss: Typically limited to the net debit.\n"
+            "Breakeven(s): Vary by structure and premiums; strike spacing shifts the profitable zone.\n"
+            "Key Sensitivities: Longer-dated long option adds vega; short option adds theta; gamma can be concentrated in the front month.\n"
+            "Typical Use Case: Mild directional view with a time-decay edge.\n"
+            "Main Risks: Large move against the short strike or IV crush.\n"
+            "Assumptions / What I need from you: Share your directional bias and preferred strike spacing for specifics."
+        )
     return (
-        "Summary: Strike selection changes cost, breakevens, and the shape of the payoff for this strategy.\n"
+        f"Summary: Strike selection changes cost, breakevens, and the shape of the payoff for {display}.\n"
         "Setup: Closer-to-ATM strikes increase sensitivity and cost; further OTM strikes reduce cost but require bigger moves.\n"
         "Payoff at Expiration: Wider strike spacing usually increases payoff range but alters probability and risk.\n"
         "Max Profit: Depends on the specific structure and strike width.\n"
@@ -1571,6 +1627,16 @@ def format_strategy_view_structured(strategy_name: str) -> str:
     return ensure_sections(summary)
 
 
+def format_view_clarify_freeform() -> str:
+    return "Which specific strategy are you referring to? I can describe the market view once you name it."
+
+
+def format_view_clarify_structured() -> str:
+    return ensure_sections(
+        "Tell me which strategy you mean, and I'll describe the market view it expresses."
+    )
+
+
 def strategy_view_label(strategy_name: str) -> str:
     name = normalize_strategy_name(strategy_name)
     view_map = {
@@ -1590,8 +1656,8 @@ def strategy_view_label(strategy_name: str) -> str:
         "iron butterfly": "neutral to short volatility",
         "collar": "defensive/neutral with capped upside",
         "protective put": "bullish with downside protection",
-        "calendar spread": "neutral to mildly directional",
-        "diagonal spread": "directional with time-decay edge",
+        "calendar spread": "neutral to mildly directional (often slightly bullish or bearish depending on strikes)",
+        "diagonal spread": "neutral to mildly directional (often slightly bullish or bearish depending on strikes)",
         "ratio spread": "directional with tail risk (depends on call/put)",
         "backspread": "volatile with directional convexity (depends on call/put)",
     }
@@ -1634,6 +1700,30 @@ def format_payoff_mechanics_freeform() -> str:
         "Calls are worth max(price - strike, 0) and puts are worth max(strike - price, 0), while spreads cap gains and losses by pairing a long and short leg. "
         "Long options have limited loss (the premium) and directional upside, while short options collect premium but take the opposite risk. "
         "Breakevens are the strike adjusted by the net premium. If you want exact numbers, share the legs and premiums."
+    )
+
+
+def format_long_short_comparison_structured() -> str:
+    return (
+        "Summary: Long options have limited loss and directional upside; short options collect premium but face the opposite risk profile.\n"
+        "Setup: Long calls/puts pay a premium; short calls/puts receive premium and take assignment risk.\n"
+        "Payoff at Expiration: Long options gain if the move is large enough; short options profit if the move is limited and time decay helps.\n"
+        "Max Profit: Long calls are uncapped; long puts are capped by the stock going to zero; short options are capped at the premium received.\n"
+        "Max Loss: Long options lose the premium; short calls can be unlimited; short puts can be large if the stock falls.\n"
+        "Breakeven(s): Long options breakeven is strike +/- premium; short options breakeven is strike +/- credit.\n"
+        "Key Sensitivities: Long options are positive convexity (long gamma) with negative theta; short options are the opposite.\n"
+        "Typical Use Case: Long options for directional or volatility bets; short options for income or range-bound views.\n"
+        "Main Risks: Long options can decay; short options can suffer large losses on sharp moves.\n"
+        "Assumptions / What I need from you: If you want a specific comparison, name the exact structure."
+    )
+
+
+def format_long_short_comparison_freeform() -> str:
+    return (
+        "Long options pay a premium for limited loss and upside exposure, while short options collect premium but carry the opposite risk. "
+        "A long call can make unlimited upside and loses only the premium; a short call keeps the premium but can face unlimited loss. "
+        "Long puts are capped by the stock going to zero, while short puts can lose heavily on a big drop. "
+        "Long options are positive convexity with negative theta; short options are negative convexity with positive theta."
     )
 
 
@@ -1702,11 +1792,23 @@ def detect_basic_option_question(text: str) -> str | None:
     lower = (text or "").lower()
     if extract_strategies(lower):
         return None
-    if "call" in lower and ("option" in lower or "how does" in lower or "what is" in lower or "explain" in lower):
+    if "call" in lower and (
+        "option" in lower
+        or "how does" in lower
+        or "what is" in lower
+        or "explain" in lower
+        or "when should" in lower
+    ):
         if any(term in lower for term in ["spread", "covered", "straddle", "strangle", "calendar", "diagonal", "ratio", "backspread"]):
             return None
         return "call"
-    if "put" in lower and ("option" in lower or "how does" in lower or "what is" in lower or "explain" in lower):
+    if "put" in lower and (
+        "option" in lower
+        or "how does" in lower
+        or "what is" in lower
+        or "explain" in lower
+        or "when should" in lower
+    ):
         if any(term in lower for term in ["spread", "protective", "cash-secured", "straddle", "strangle", "calendar", "diagonal", "ratio", "backspread"]):
             return None
         return "put"
@@ -2463,6 +2565,8 @@ def is_income_request(text: str) -> bool:
         "income",
         "generate income",
         "earn income",
+        "earn premium",
+        "earn option premium",
         "yield",
         "credit",
         "collect premium",
@@ -2517,7 +2621,36 @@ def is_view_question(text: str) -> bool:
         "neutral or bearish",
         "volatile or neutral",
     ]
+    if any(t in lower for t in triggers):
+        return True
+    if any(word in lower for word in ["bullish", "bearish", "neutral", "volatile"]) and any(
+        phrase in lower for phrase in ["is a", "is an", "is the", "is ", "express", "view"]
+    ):
+        return True
+    return False
+
+
+def is_view_menu_request(text: str) -> bool:
+    lower = (text or "").lower()
+    triggers = [
+        "view-based trade menu",
+        "view based trade menu",
+        "trade menu",
+        "strategy menu",
+        "menu of strategies",
+        "view menu",
+    ]
     return any(t in lower for t in triggers)
+
+
+def view_menu_prompt_freeform() -> str:
+    return "Which market view should I use: bullish, bearish, neutral, volatile, or short volatility?"
+
+
+def view_menu_prompt_structured() -> str:
+    return ensure_sections(
+        "Tell me which market view you want (bullish, bearish, neutral, volatile, or short volatility), and I'll give a strategy menu."
+    )
 
 
 def is_payoff_mechanics_question(text: str) -> bool:
@@ -2525,11 +2658,29 @@ def is_payoff_mechanics_question(text: str) -> bool:
     triggers = [
         "how do options payoffs work",
         "how do payoffs work",
+        "option payoff mechanics",
+        "payoff mechanics",
         "payoff at expiration",
         "payoffs at expiration",
         "expiration payoff",
+        "how do breakevens work",
+        "breakevens work",
     ]
     return any(t in lower for t in triggers)
+
+
+def is_long_short_comparison_question(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(
+        t in lower
+        for t in [
+            "long vs short options",
+            "long and short options",
+            "difference between long and short options",
+            "max loss differ between long and short",
+            "max loss difference between long and short",
+        ]
+    )
 
 
 def use_case_phrase(text: str) -> str:
@@ -2590,6 +2741,8 @@ def needs_clarification(text: str) -> bool:
     lower = (text or "").lower().strip()
     if not lower:
         return True
+    if is_view_menu_request(lower):
+        return False
     if not is_options_related(lower):
         return False
     if extract_strategies(lower):
