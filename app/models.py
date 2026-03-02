@@ -31,6 +31,8 @@ class ChatRequest(BaseModel):
     view: Optional[str] = None
     strategy: Optional[str] = None
     legs: Optional[List[Leg]] = None
+    mode: Optional[Literal["structured", "freeform"]] = None
+    session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -49,3 +51,7 @@ class QuoteResponse(BaseModel):
     ticker: str
     price: float
     source: str
+
+
+class ClearRequest(BaseModel):
+    session_id: str

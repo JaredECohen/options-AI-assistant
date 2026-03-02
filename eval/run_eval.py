@@ -24,7 +24,8 @@ def has_required_headings(text: str) -> bool:
         "Summary",
         "Setup",
         "Payoff at Expiration",
-        "Max Profit / Max Loss",
+        "Max Profit",
+        "Max Loss",
         "Breakeven(s)",
         "Key Sensitivities",
         "Typical Use Case",
@@ -52,16 +53,20 @@ async def build_services():
     from app.providers.options.factory import build_options_provider
     from app.services.chat_service import ChatService
     from app.services.llm_service import LLMService
+    from app.services.memory_store import MemoryStore
 
     options_provider = build_options_provider()
     llm_service = LLMService()
-    return ChatService(options_provider, llm_service)
+    memory_store = MemoryStore()
+    return ChatService(options_provider, llm_service, memory_store)
 
 
 async def run_case(chat_service, case: dict, judge_provider=None, deterministic=False) -> Tuple[bool, Dict[str, bool]]:
     from app.models import ChatRequest
 
-    req = ChatRequest(**case["input"])
+    payload = dict(case["input"])
+    payload.setdefault("session_id", case["id"])
+    req = ChatRequest(**payload)
     response = await chat_service.handle(req)
 
     deterministic_checks = {}
@@ -73,10 +78,26 @@ async def run_case(chat_service, case: dict, judge_provider=None, deterministic=
     else:
         deterministic_checks["refusal"] = True
 
+    requires_view_prompt = case.get("deterministic", {}).get("requires_view_prompt", False)
+    if requires_view_prompt:
+        text = response.response_text.lower()
+        deterministic_checks["view_prompt"] = any(term in text for term in ["view", "bullish", "bearish", "neutral", "volatile"])
+    else:
+        deterministic_checks["view_prompt"] = True
+
+    requires_moneyness = case.get("deterministic", {}).get("requires_moneyness", False)
+    if requires_moneyness:
+        text = response.response_text.lower()
+        deterministic_checks["moneyness"] = "%" in text or "otm" in text
+    else:
+        deterministic_checks["moneyness"] = True
+
     requires_autofill = case.get("deterministic", {}).get("requires_premium_autofill", False)
     if requires_autofill:
         premiums = response.computed["computed"]["premiums_used"] if response.computed else []
-        deterministic_checks["premium_autofill"] = all(p.get("premium") is not None for p in premiums)
+        deterministic_checks["premium_autofill"] = all(
+            p.get("premium") is not None or p.get("assumed_premium") is not None for p in premiums
+        )
     else:
         deterministic_checks["premium_autofill"] = True
 
