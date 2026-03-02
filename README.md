@@ -7,6 +7,7 @@ This project is a narrow-domain chatbot that explains listed equity options stra
 ## What This App Does
 - Explains vanilla listed equity options strategies and when they make sense
 - Answers market-view questions (bullish/bearish/neutral/volatile) with a best-match trade plus alternatives using % moneyness examples
+- Explains Greeks (delta/gamma/theta/vega/rho), implied volatility, and payoff mechanics
 - Explains convexity and gamma exposure and how they shape payoff curvature
 - Evaluates user-specified legs and computes payoff metrics from user-provided premiums when available (otherwise intrinsic-only)
 - Provides a strategy builder with market-view and strategy filtering

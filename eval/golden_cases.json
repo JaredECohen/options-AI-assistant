@@ -597,5 +597,36 @@
         "curvature"
       ]
     }
+  },
+  {
+    "id": "in_18",
+    "category": "in_domain",
+    "input": {
+      "message": "What market view does a long strangle express?"
+    },
+    "maaj": {
+      "type": "golden",
+      "expected": "Identifies long strangle as a volatile/long-volatility view.",
+      "keywords": [
+        "volatile",
+        "volatility"
+      ]
+    }
+  },
+  {
+    "id": "in_19",
+    "category": "in_domain",
+    "input": {
+      "message": "How do options payoffs work at expiration?"
+    },
+    "maaj": {
+      "type": "golden",
+      "expected": "Explains payoff mechanics using strike and premium concepts.",
+      "keywords": [
+        "strike",
+        "premium",
+        "expiration"
+      ]
+    }
   }
 ]
