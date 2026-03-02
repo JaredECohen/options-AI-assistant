@@ -63,6 +63,14 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/llm_status")
+async def llm_status():
+    return {
+        "provider": llm_service.provider_name,
+        "deterministic": llm_service.deterministic,
+    }
+
+
 @app.get("/api/quote", response_model=QuoteResponse)
 async def quote(ticker: str = Query(...)):
     price = await options_provider.get_underlying_price(ticker)

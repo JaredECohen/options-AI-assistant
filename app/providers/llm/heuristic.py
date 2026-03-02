@@ -8,10 +8,32 @@ class HeuristicProvider:
     name = "heuristic"
 
     async def generate(self, system: str, user: str, max_output_tokens: int, temperature: float) -> str:
-        lower = user.lower()
+        current_message = _extract_current_message(user)
+        lower = current_message.lower()
+        if is_straddle_strangle_comparison(lower):
+            return format_straddle_vs_strangle()
+        if is_debit_credit_spread_question(lower):
+            return format_debit_credit_spreads()
+        if is_otm_call_comparison(lower):
+            return format_otm_call_comparison()
+        if is_gamma_convexity_question(lower):
+            return format_gamma_convexity()
+        if is_vega_iv_question(lower):
+            return format_vega_iv()
         comparison = detect_comparison(lower)
         if comparison:
             return format_comparison(comparison)
+        greeks = detect_greeks(lower)
+        if greeks:
+            if is_all_greeks_request(lower) or len(greeks) >= 4:
+                return format_all_greeks()
+            if "convexity" in greeks and len(greeks) == 1:
+                return format_convexity()
+            if len(greeks) == 1:
+                return format_greek(greeks[0])
+            return format_greek_comparison(greeks)
+        if is_general_strike_selection_question(lower):
+            return format_general_strike_selection()
         if any(term in lower for term in ["straddle", "strangle", "stradle", "stangle"]) and any(
             term in lower for term in ["when should", "when to use", "use", "choose"]
         ):
@@ -37,6 +59,286 @@ def get_strategy_names():
     from app.core.strategies import STRATEGIES
 
     return STRATEGIES.keys()
+
+
+def _extract_current_message(text: str) -> str:
+    marker = "Current user message:"
+    if marker not in text:
+        return text
+    after = text.split(marker, 1)[1]
+    stop = "Context (use only if the user asked for payoff/evaluation):"
+    if stop in after:
+        after = after.split(stop, 1)[0]
+    return after.strip()
+
+
+def is_general_strike_selection_question(text: str) -> bool:
+    triggers = [
+        "pick strike",
+        "picking strike",
+        "choose strike",
+        "choosing strike",
+        "strike price",
+        "strike prices",
+        "how should i think about strike",
+        "how should i think bout strike",
+        "how to choose strikes",
+    ]
+    if any(t in text for t in triggers):
+        return True
+    if "strike" in text and any(k in text for k in ["how", "think", "choose", "pick", "select"]):
+        return True
+    return False
+
+
+def format_general_strike_selection() -> str:
+    return (
+        "Strike selection is about trade-offs: closer-to-the-money strikes cost more but respond more quickly to price moves, "
+        "while further OTM strikes are cheaper but need a larger move to pay off. For debit trades, the breakeven rises as you go "
+        "further OTM; for credit trades, moving strikes further away typically lowers the credit but increases the cushion. "
+        "Shorter expirations are cheaper but give less time; longer expirations cost more but give the thesis time to play out. "
+        "Tell me the strategy, time horizon, or target move and I can tailor the strike logic."
+    )
+
+
+def is_straddle_strangle_comparison(text: str) -> bool:
+    return "straddle" in text and "strangle" in text and any(
+        t in text for t in ["compare", "difference", "differ", "vs", "versus", "how do"]
+    )
+
+
+def format_straddle_vs_strangle() -> str:
+    return (
+        "A long straddle uses a call and put at the same strike, so it costs more but needs a smaller move to break even. "
+        "A long strangle uses OTM call and put strikes, so it's cheaper but needs a larger move to pay off. "
+        "Both benefit from big moves and are hurt by time decay; the straddle is more responsive, the strangle is lower cost."
+    )
+
+
+def is_debit_credit_spread_question(text: str) -> bool:
+    return "spread" in text and "debit" in text and "credit" in text
+
+
+def format_debit_credit_spreads() -> str:
+    return (
+        "Debit spreads pay upfront and have defined, limited risk equal to the debit; they profit from a directional move. "
+        "Credit spreads collect premium and profit if price stays on the safe side of the short strike; their max loss is the "
+        "spread width minus the credit. Debit spreads are long premium (positive convexity), while credit spreads are short premium "
+        "(negative convexity) and are more vulnerable to sharp moves."
+    )
+
+
+def is_otm_call_comparison(text: str) -> bool:
+    if "call" not in text or "otm" not in text:
+        return False
+    return any(p in text for p in ["10%", "10 %"]) and any(p in text for p in ["20%", "20 %"])
+
+
+def format_otm_call_comparison() -> str:
+    return (
+        "A 10% OTM call is closer to the current price, so it costs more, has higher delta, and needs a smaller move to break even. "
+        "A 20% OTM call is cheaper but has lower delta and needs a larger move to pay off. The 10% OTM call is more responsive; the "
+        "20% OTM call is higher leverage but more likely to expire worthless."
+    )
+
+
+def is_gamma_convexity_question(text: str) -> bool:
+    return "gamma" in text and "convexity" in text
+
+
+def format_gamma_convexity() -> str:
+    return (
+        "Gamma is the rate at which delta changes; that's what creates convexity in options. "
+        "Higher gamma means P/L curves more sharply as price moves, which is why long options are positive convexity and short options are negative convexity. "
+        "Gamma is highest near the strike and for shorter expirations."
+    )
+
+
+def is_vega_iv_question(text: str) -> bool:
+    return "vega" in text and ("implied volatility" in text or " iv" in text or "iv " in text)
+
+
+def format_vega_iv() -> str:
+    return (
+        "Vega measures how much an option's price changes when implied volatility (IV) changes. "
+        "When IV rises, option premiums rise and long options benefit; when IV falls, premiums drop and long options suffer. "
+        "Vega is larger for longer-dated and near-the-money options."
+    )
+
+
+def detect_greeks(text: str) -> list[str]:
+    terms = []
+    if "delta" in text:
+        terms.append("delta")
+    if "gamma" in text:
+        terms.append("gamma")
+    if "theta" in text:
+        terms.append("theta")
+    if "vega" in text:
+        terms.append("vega")
+    if "rho" in text:
+        terms.append("rho")
+    if "convexity" in text:
+        terms.append("convexity")
+    if "implied volatility" in text or " iv" in text or text.strip().startswith("iv"):
+        terms.append("implied volatility")
+    if "volatility" in text and "implied volatility" not in terms:
+        if any(word in text for word in ["implied", "iv"]):
+            terms.append("implied volatility")
+    # Deduplicate preserve order
+    seen = set()
+    ordered = []
+    for t in terms:
+        if t not in seen:
+            seen.add(t)
+            ordered.append(t)
+    return ordered
+
+
+def is_all_greeks_request(text: str) -> bool:
+    return any(
+        t in text
+        for t in [
+            "greeks",
+            "the greeks",
+            "option greeks",
+            "explain the greeks",
+            "explain greeks",
+        ]
+    )
+
+
+def format_all_greeks() -> str:
+    return (
+        "The main Greeks describe how an option's price changes: "
+        "Delta is sensitivity to a $1 move in the underlying; "
+        "Gamma is how fast delta changes (convexity); "
+        "Theta is time decay; "
+        "Vega is sensitivity to implied volatility; "
+        "Rho is sensitivity to interest rates. "
+        "If you want, I can explain any one of these in more detail or apply them to a specific strategy."
+    )
+
+
+def format_greek(term: str) -> str:
+    if term == "delta":
+        summary = "Delta is the option's sensitivity to a $1 move in the underlying."
+        setup = "Calls have positive delta; puts have negative delta. Delta grows as options move ITM."
+        payoff = "Higher delta means the option price moves more with the stock."
+        max_profit = "Depends on the position; delta does not cap profit."
+        max_loss = "Depends on the position; long options risk premium paid."
+        breakevens = "Breakevens depend on strikes and premiums."
+        sensitivities = "Delta changes with price and time; gamma governs how fast delta changes."
+        use_case = "Use delta to gauge directional exposure and hedge ratios."
+        risks = "Delta is not constant; large moves and time changes alter it."
+    elif term == "gamma":
+        summary = "Gamma is how quickly delta changes as the underlying moves; it drives convexity."
+        setup = "Long options have positive gamma; short options have negative gamma."
+        payoff = "Higher gamma means P/L accelerates with larger moves (positive convexity)."
+        max_profit = "Depends on the position; long gamma can benefit from large moves."
+        max_loss = "Short gamma can lose quickly on sharp moves; long gamma is limited to premium."
+        breakevens = "Breakevens depend on strikes and premiums."
+        sensitivities = "Gamma is highest near the strike and for shorter expirations."
+        use_case = "Use gamma to assess convexity and risk to large moves."
+        risks = "Short gamma is risky in volatile markets; long gamma pays for time."
+    elif term == "theta":
+        summary = "Theta is time decay: how option value changes as time passes."
+        setup = "Long options are typically short theta; short options are long theta."
+        payoff = "All else equal, long options lose value as expiration approaches."
+        max_profit = "Depends on the position."
+        max_loss = "Long options can lose the premium from decay if price doesn't move."
+        breakevens = "Breakevens depend on strikes and premiums."
+        sensitivities = "Theta accelerates as expiration nears and is highest near the strike."
+        use_case = "Use theta to understand carry costs for long options and income for short premium."
+        risks = "Time decay can erode positions even if direction is correct but slow."
+    elif term == "vega":
+        summary = "Vega measures sensitivity to implied volatility."
+        setup = "Long options are long vega; short options are short vega."
+        payoff = "Rising IV helps long options; falling IV hurts them."
+        max_profit = "Depends on the position."
+        max_loss = "Short vega positions can lose if IV spikes."
+        breakevens = "Breakevens depend on strikes and premiums."
+        sensitivities = "Vega is higher for longer-dated and near-the-money options."
+        use_case = "Use vega to assess exposure to volatility changes."
+        risks = "IV crush can hurt long options after events."
+    elif term == "rho":
+        summary = "Rho measures sensitivity to interest rates."
+        setup = "Calls tend to benefit from rising rates; puts tend to be hurt."
+        payoff = "Rho is usually small for short-dated equity options."
+        max_profit = "Depends on the position."
+        max_loss = "Depends on the position."
+        breakevens = "Breakevens depend on strikes and premiums."
+        sensitivities = "Rho matters more for longer expirations."
+        use_case = "Use rho for long-dated options or rate-sensitive periods."
+        risks = "Rate changes can shift option values modestly."
+    elif term == "implied volatility":
+        summary = "Implied volatility is the market's estimate of future price movement."
+        setup = "Higher IV means higher option premiums; lower IV means cheaper options."
+        payoff = "Long options benefit from IV expansion; short options benefit from IV contraction."
+        max_profit = "Depends on the position."
+        max_loss = "Depends on the position."
+        breakevens = "Breakevens depend on strikes and premiums."
+        sensitivities = "IV impacts vega; longer-dated options are more sensitive."
+        use_case = "Use IV to compare relative option richness or cheapness."
+        risks = "IV can drop after catalysts, hurting long options."
+    else:  # convexity
+        return format_convexity()
+    return (
+        f"Summary: {summary}\n"
+        f"Setup: {setup}\n"
+        f"Payoff at Expiration: {payoff}\n"
+        f"Max Profit: {max_profit}\n"
+        f"Max Loss: {max_loss}\n"
+        f"Breakeven(s): {breakevens}\n"
+        f"Key Sensitivities: {sensitivities}\n"
+        f"Typical Use Case: {use_case}\n"
+        f"Main Risks: {risks}\n"
+        "Assumptions / What I need from you: Ask about a specific strategy if you want this applied to a trade."
+    )
+
+
+def format_greek_comparison(terms: list[str]) -> str:
+    term_list = [t for t in terms if t != "convexity"]
+    if not term_list:
+        return format_convexity()
+    summary = " and ".join([t.title() if t != "implied volatility" else "Implied Volatility" for t in term_list])
+    setup = "; ".join([f"{t.title() if t != 'implied volatility' else 'Implied Volatility'}: {strip_label(format_greek(t), 'Setup:')}" for t in term_list])
+    payoff = "; ".join([f"{t.title() if t != 'implied volatility' else 'Implied Volatility'}: {strip_label(format_greek(t), 'Payoff at Expiration:')}" for t in term_list])
+    sensitivities = "; ".join([f"{t.title() if t != 'implied volatility' else 'Implied Volatility'}: {strip_label(format_greek(t), 'Key Sensitivities:')}" for t in term_list])
+    return (
+        f"Summary: Comparison of {summary}.\n"
+        f"Setup: {setup}\n"
+        f"Payoff at Expiration: {payoff}\n"
+        "Max Profit: Depends on the position.\n"
+        "Max Loss: Depends on the position.\n"
+        "Breakeven(s): Depend on strikes and premiums.\n"
+        f"Key Sensitivities: {sensitivities}\n"
+        "Typical Use Case: Use these to understand different risk drivers in options pricing.\n"
+        "Main Risks: Misreading the dominant risk driver can lead to poor positioning.\n"
+        "Assumptions / What I need from you: Ask about a specific strategy if you want these applied to a trade."
+    )
+
+
+def strip_label(text: str, label: str) -> str:
+    for line in text.splitlines():
+        if line.startswith(label):
+            return line[len(label):].strip()
+    return ""
+
+
+def format_convexity() -> str:
+    return (
+        "Summary: Convexity is the curvature of P/L, driven by gamma (delta changing as price moves).\n"
+        "Setup: Long options are positive convexity (long gamma); short options are negative convexity (short gamma).\n"
+        "Payoff at Expiration: Positive convexity benefits from large moves; negative convexity benefits from small moves and time decay.\n"
+        "Max Profit: Positive convexity can accelerate gains on large moves; negative convexity is often capped by credit.\n"
+        "Max Loss: Positive convexity is often limited to premium; negative convexity can be large without defined risk.\n"
+        "Breakeven(s): Depend on strikes and premiums; convexity affects how quickly P/L improves beyond breakevens.\n"
+        "Key Sensitivities: Gamma is highest near the strike and for shorter expirations.\n"
+        "Typical Use Case: Use positive convexity when expecting large moves; negative convexity for range-bound views.\n"
+        "Main Risks: Long gamma pays for time; short gamma can suffer in sharp moves.\n"
+        "Assumptions / What I need from you: Name a strategy if you want convexity for a specific structure."
+    )
 
 
 def _sentence(text: str) -> str:

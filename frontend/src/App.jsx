@@ -8,9 +8,23 @@ const viewToStrategies = {
     'bull put spread',
     'covered call',
     'cash-secured put',
+    'collar',
+    'protective put',
+    'diagonal spread',
+    'ratio spread',
   ],
-  bearish: ['long put', 'bear put spread', 'bear call spread'],
-  neutral: ['iron condor', 'iron butterfly', 'short strangle', 'short straddle', 'calendar spread'],
+  bearish: ['long put', 'bear put spread', 'bear call spread', 'diagonal spread', 'ratio spread'],
+  neutral: [
+    'iron condor',
+    'iron butterfly',
+    'short strangle',
+    'short straddle',
+    'calendar spread',
+    'collar',
+    'protective put',
+    'diagonal spread',
+    'ratio spread',
+  ],
   volatile: ['long straddle', 'long strangle', 'backspread'],
 };
 
@@ -35,6 +49,19 @@ const keyTerms = [
   { term: 'Vega', def: 'Change in option price for a 1% change in implied volatility.' },
   { term: 'Rho', def: 'Change in option price for a 1% change in interest rates.' },
   { term: 'Implied Volatility', def: 'Market-implied estimate of future price movement.' },
+];
+
+const exampleQuestions = [
+  'What is a bull call spread and when does it make sense?',
+  'How do straddles differ from strangles?',
+  'I am bullish for the next 6 months. What strategies fit?',
+  'How should I think about picking strike prices?',
+  'What does gamma tell me about convexity?',
+  'Explain vega and how IV changes option pricing.',
+  'When would I use a covered call vs a cash-secured put?',
+  'How do debit and credit spreads differ in risk?',
+  'What strategies generate income in a neutral market?',
+  'How does a 10% OTM call behave vs a 20% OTM call?',
 ];
 
 const strategyOptions = [
@@ -69,6 +96,8 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState([]);
   const [showTerms, setShowTerms] = useState(false);
+  const [showExamples, setShowExamples] = useState(false);
+  const [loadingAction, setLoadingAction] = useState(null);
 
   const sessionId = useMemo(() => {
     let stored = localStorage.getItem(sessionKey);
@@ -89,6 +118,7 @@ export default function App() {
     });
     return map;
   }, []);
+
 
   const filteredStrategies = useMemo(() => {
     if (!view) return strategyOptions;
@@ -123,6 +153,10 @@ export default function App() {
     if (mode === 'freeform' && !message.trim()) {
       return;
     }
+    if (loadingAction) {
+      return;
+    }
+    setLoadingAction(mode === 'freeform' ? 'send' : 'strategy');
     const payload = {
       message: message,
       ticker: ticker.trim() || null,
@@ -131,18 +165,50 @@ export default function App() {
       mode,
       session_id: sessionId,
     };
-    if (mode === 'freeform' && message.trim()) {
-      appendMessage(message);
+    try {
+      if (mode === 'freeform' && message.trim()) {
+        appendMessage(message);
+      }
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      appendMessage(data.response_text || '');
+      if (mode === 'freeform') {
+        setMessage('');
+      }
+    } finally {
+      setLoadingAction(null);
     }
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    appendMessage(data.response_text || '');
-    if (mode === 'freeform') {
+  };
+
+  const sendPreset = async (text) => {
+    if (loadingAction) {
+      return;
+    }
+    setLoadingAction('example');
+    const payload = {
+      message: text,
+      ticker: ticker.trim() || null,
+      view: view || null,
+      strategy: strategy || null,
+      mode: 'freeform',
+      session_id: sessionId,
+    };
+    try {
+      appendMessage(text);
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      appendMessage(data.response_text || '');
       setMessage('');
+    } finally {
+      setLoadingAction(null);
     }
   };
 
@@ -163,7 +229,10 @@ export default function App() {
             <h1>Options Strategy Explainer</h1>
             <p>Educational only. Ask about strategies, market views, and mechanics.</p>
           </div>
-          <button className="secondary inline-button" onClick={() => setShowTerms(true)}>Key Terms</button>
+          <div className="header-actions">
+            <button className="secondary inline-button" onClick={() => setShowExamples(true)}>Example Questions</button>
+            <button className="secondary inline-button" onClick={() => setShowTerms(true)}>Key Terms</button>
+          </div>
         </div>
       </header>
 
@@ -194,7 +263,17 @@ export default function App() {
               </select>
             </div>
           </div>
-          <button id="strategyBtn" onClick={() => sendChat('structured')}>Explain Strategy</button>
+          <button
+            id="strategyBtn"
+            onClick={() => sendChat('structured')}
+            disabled={loadingAction !== null}
+          >
+            {loadingAction === 'strategy' ? (
+              <span className="button-loading"><span className="spinner" />Loading...</span>
+            ) : (
+              'Explain Strategy'
+            )}
+          </button>
         </div>
 
         <div className="card">
@@ -208,8 +287,16 @@ export default function App() {
             placeholder="Ask about a strategy, market view, or mechanics..."
           />
           <div className="row">
-            <button id="send" onClick={() => sendChat('freeform')}>Send</button>
-            <button className="secondary" id="clearChat" onClick={clearChat}>Clear Chat</button>
+            <button id="send" onClick={() => sendChat('freeform')} disabled={loadingAction !== null}>
+              {loadingAction === 'send' || loadingAction === 'example' ? (
+                <span className="button-loading"><span className="spinner" />Sending...</span>
+              ) : (
+                'Send'
+              )}
+            </button>
+            <button className="secondary" id="clearChat" onClick={clearChat} disabled={loadingAction !== null}>
+              Clear Chat
+            </button>
           </div>
           <div style={{ marginTop: '12px' }}>
             <div className="chat-log">
@@ -234,6 +321,33 @@ export default function App() {
               <li key={item.term}>
                 <span className="legend-term">{item.term}</span>
                 {item.def}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div className={`modal ${showExamples ? 'open' : ''}`} onClick={(e) => {
+        if (e.target.classList.contains('modal')) setShowExamples(false);
+      }}>
+        <div className="modal-content" role="dialog" aria-modal="true" aria-labelledby="examplesTitle">
+          <div className="modal-header">
+            <div className="modal-title" id="examplesTitle">Example Questions</div>
+            <button className="close-button" onClick={() => setShowExamples(false)}>Close</button>
+          </div>
+          <ul className="example-list">
+            {exampleQuestions.map((q) => (
+              <li key={q}>
+                <button
+                  className="example-button"
+                  type="button"
+                  onClick={() => {
+                    sendPreset(q);
+                    setShowExamples(false);
+                  }}
+                >
+                  {q}
+                </button>
               </li>
             ))}
           </ul>

@@ -52,6 +52,7 @@ The FastAPI app will serve `frontend/dist` when it exists.
 
 Logging:
 - Set `LOG_LEVEL` in `.env` (e.g., `INFO`, `DEBUG`) to control server-side logging.
+- The backend logs which LLM provider is active at startup.
 
 ## Running Evals
 The eval harness runs 20+ cases with deterministic checks plus MaaJ grading. It supports offline mock mode.
@@ -64,6 +65,7 @@ uv run python eval/run_eval.py --mock --deterministic
 - `POST /api/chat`
 - `GET /health`
 - `POST /api/clear` (clears server-side chat memory for a session)
+- `GET /api/llm_status` (returns the active provider and deterministic flag)
 
 Note: `/api/chain` and `/api/quote` exist for future live-data extensions but are not used by the current UI.
 
@@ -94,7 +96,7 @@ Replace the live URL placeholder above with the resulting Cloud Run URL.
 - Deterministic eval mode can bypass the LLM when possible
 
 ## Notes
-- If Vertex credentials are missing, the app falls back to a deterministic strategy-card mode so evals still run offline.
+- If Vertex credentials are missing, the app falls back to a heuristic provider so the UI and evals still run offline.
 - Payoff calculations are at expiration only and use the contract multiplier of 100 for options.
 - Premiums are optional in this simplified mode; no live chain or quote fetch is required.
 - Strike suggestions are expressed as % moneyness only (e.g., 10% OTM) and are educational examples tied to the user's stated market view.
