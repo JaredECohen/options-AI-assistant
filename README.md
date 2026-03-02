@@ -1,6 +1,6 @@
 # Options Strategy Explainer + Payoff Calculator
 
-Live URL (Cloud Run): https://YOUR_CLOUD_RUN_URL_HERE
+Live URL (Cloud Run): https://options-chatbot-31106317134.us-central1.run.app
 
 This project is a narrow-domain chatbot that explains listed equity options strategies and calculates expiration payoffs. Premiums are optional; if missing, the app describes intrinsic-only payoff and notes the assumption. It includes a full evaluation harness with deterministic checks and model-as-judge (MaaJ) tests. The frontend is a React app (Vite).
 
