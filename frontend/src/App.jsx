@@ -226,8 +226,8 @@ export default function App() {
       <header>
         <div className="header-content">
           <div>
-            <h1>Options Strategy Explainer</h1>
-            <p>Educational only. Ask about strategies, market views, and mechanics.</p>
+            <h1>Options Coach AI</h1>
+            <p>Options strategies, explained simply.</p>
           </div>
           <div className="header-actions">
             <button className="secondary inline-button" onClick={() => setShowExamples(true)}>Example Questions</button>
