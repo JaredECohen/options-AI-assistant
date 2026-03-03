@@ -61,6 +61,24 @@ The eval harness runs 20+ cases with deterministic checks plus MaaJ grading. It 
 uv run python eval/run_eval.py --mock --deterministic
 ```
 
+To run MaaJ with the Vertex LLM (no deterministic fallback), set Vertex env vars and omit `--deterministic`:
+
+```bash
+export LLM_PROVIDER=vertex
+export VERTEX_PROJECT_ID=ieor-4576-jared
+export VERTEX_LOCATION=us-central1
+export VERTEX_MODEL=gemini-2.5-flash-lite
+gcloud auth application-default login
+
+uv run python eval/run_eval.py --mock
+```
+
+Fully live (no mock providers):
+
+```bash
+uv run python eval/run_eval.py
+```
+
 ## API Endpoints
 - `POST /api/chat`
 - `GET /health`

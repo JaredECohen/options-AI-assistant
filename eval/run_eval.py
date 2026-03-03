@@ -198,9 +198,23 @@ async def main_async():
         category_totals[case["category"]] = category_totals.get(case["category"], 0) + 1
         category_pass[case["category"]] = category_pass.get(case["category"], 0) + (1 if passed else 0)
 
+    def has_deterministic_metric(checks: dict) -> bool:
+        for key in [
+            "summary_keywords",
+            "refusal",
+            "view_prompt",
+            "moneyness",
+            "headings",
+            "premium_autofill",
+        ]:
+            if key in checks:
+                return True
+        return False
+
     for case_id, category, passed, checks in results:
         status = "PASS" if passed else "FAIL"
         print(f"[{status}] {case_id} ({category}) checks={checks}")
+        print(f"  deterministic_metric_included={has_deterministic_metric(checks)}")
 
     print("\nPass rates by category:")
     for category, total in category_totals.items():
