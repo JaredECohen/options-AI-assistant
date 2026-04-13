@@ -154,6 +154,8 @@ button:disabled {
   border-radius: 12px;
   padding: 12px;
   min-height: 160px;
+  max-height: 360px;
+  overflow-y: auto;
   white-space: pre-wrap;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 12px;

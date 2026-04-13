@@ -5,17 +5,36 @@ import os
 import sys
 from typing import Any, Dict, Tuple
 
+from dotenv import load_dotenv
+
 # Ensure repo root is on sys.path so `app` imports work when run directly.
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Allow environment overrides before importing app code
+# Load repo .env so local evals pick up API keys and provider config without manual export.
+load_dotenv(os.path.join(REPO_ROOT, ".env"))
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mock", action="store_true", help="Use mock options provider")
-    parser.add_argument("--deterministic", action="store_true", help="Disable LLM judge and use heuristics")
+    parser.add_argument(
+        "--generator",
+        choices=["heuristic", "vertex"],
+        default="heuristic",
+        help="Generator backend for chatbot responses during eval. Defaults to heuristic so the judge path can be kept separate.",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Force local deterministic evaluation regardless of generator/judge settings.",
+    )
+    parser.add_argument(
+        "--judge",
+        choices=["none", "vertex", "claude"],
+        default="none",
+        help="Judge backend for MaaJ evals. Use 'none' for local heuristic judging, or 'vertex'/'claude' for LLM-as-judge.",
+    )
     return parser.parse_args()
 
 
@@ -126,6 +145,13 @@ async def run_case(chat_service, case: dict, judge_provider=None, deterministic=
     else:
         deterministic_checks["moneyness"] = True
 
+    forbidden_phrases = case.get("deterministic", {}).get("forbidden_phrases", [])
+    if forbidden_phrases:
+        text = response.response_text.lower()
+        deterministic_checks["forbidden_phrases"] = all(phrase.lower() not in text for phrase in forbidden_phrases)
+    else:
+        deterministic_checks["forbidden_phrases"] = True
+
     summary_keywords = case.get("deterministic", {}).get("summary_keywords", [])
     deterministic_checks["summary_keywords"] = summary_keywords_present(summary_keywords, response.response_text)
 
@@ -173,27 +199,72 @@ async def main_async():
     args = parse_args()
     if args.mock:
         os.environ["OPTIONS_PROVIDER"] = "mock"
-    if args.deterministic:
+
+    if args.judge != "none" and args.generator == args.judge:
+        raise SystemExit(
+            f"Refusing to run eval with generator='{args.generator}' and judge='{args.judge}' from the same provider family. "
+            "Use a different generator or judge backend."
+        )
+
+    os.environ["LLM_PROVIDER"] = args.generator
+    deterministic = args.deterministic or (args.judge == "none" and args.generator == "heuristic")
+    if deterministic:
         os.environ["EVAL_DETERMINISTIC"] = "1"
+    else:
+        os.environ.pop("EVAL_DETERMINISTIC", None)
 
     cases = load_cases(os.path.join(os.path.dirname(__file__), "golden_cases.json"))
     chat_service = await build_services()
 
     judge_provider = None
-    if not args.deterministic:
+    if args.judge == "vertex":
         try:
             from app.providers.llm.vertex import VertexProvider
 
             judge_provider = VertexProvider()
         except Exception:
             judge_provider = None
+            print("Warning: Vertex judge requested but unavailable; falling back to local heuristic judging.")
+    elif args.judge == "claude":
+        try:
+            from app.providers.llm.anthropic import AnthropicProvider
+
+            judge_provider = AnthropicProvider()
+        except Exception:
+            judge_provider = None
+            print("Warning: Claude judge requested but unavailable; falling back to local heuristic judging.")
+
+    print(f"Eval config: generator={args.generator} judge={args.judge} deterministic={deterministic}")
 
     results = []
     category_totals = {}
     category_pass = {}
+    judge_runtime_failed = False
 
     for case in cases:
-        passed, checks = await run_case(chat_service, case, judge_provider=judge_provider, deterministic=args.deterministic)
+        case_deterministic = deterministic or judge_runtime_failed
+        try:
+            passed, checks = await run_case(
+                chat_service,
+                case,
+                judge_provider=judge_provider,
+                deterministic=case_deterministic,
+            )
+        except Exception as exc:
+            if judge_provider is not None and not case_deterministic:
+                judge_runtime_failed = True
+                print(
+                    f"Warning: judge backend '{args.judge}' failed during evaluation ({exc.__class__.__name__}: {exc}). "
+                    "Falling back to local heuristic judging for the remaining cases."
+                )
+                passed, checks = await run_case(
+                    chat_service,
+                    case,
+                    judge_provider=None,
+                    deterministic=True,
+                )
+            else:
+                raise
         results.append((case["id"], case["category"], passed, checks))
         category_totals[case["category"]] = category_totals.get(case["category"], 0) + 1
         category_pass[case["category"]] = category_pass.get(case["category"], 0) + (1 if passed else 0)
@@ -206,6 +277,7 @@ async def main_async():
             "moneyness",
             "headings",
             "premium_autofill",
+            "forbidden_phrases",
         ]:
             if key in checks:
                 return True

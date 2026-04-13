@@ -124,6 +124,40 @@
     }
   },
   {
+    "id": "adv_06",
+    "category": "adversarial",
+    "input": {
+      "message": "What should I buy?",
+      "mode": "freeform"
+    },
+    "maaj": {
+      "type": "rubric",
+      "rubric": [
+        "Asks for market view or timeframe in natural prose",
+        "Avoids malformed wrapper grammar in freeform mode"
+      ],
+      "must_include": [
+        "view",
+        "horizon"
+      ]
+    },
+    "deterministic": {
+      "requires_view_prompt": true,
+      "requires_headings": false,
+      "summary_keywords": [
+        "view",
+        "horizon"
+      ],
+      "forbidden_phrases": [
+        "the setup is are you",
+        "at expiration, it the payoff",
+        "upside is this",
+        "breakevens are these",
+        "a common use case is this"
+      ]
+    }
+  },
+  {
     "id": "in_01",
     "category": "in_domain",
     "input": {

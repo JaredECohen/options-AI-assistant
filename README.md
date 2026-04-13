@@ -35,6 +35,8 @@ uv run python -m uvicorn app.main:app --reload
 
 Open http://localhost:8000 in a browser after building the frontend, or run the React dev server (below).
 
+By default, the sample env uses the mock options data provider so local quote/chain routes work without live market credentials. Set `OPTIONS_PROVIDER=tradier` and `TRADIER_API_TOKEN` only when you want live Tradier data.
+
 ### Frontend Dev (React + Vite)
 ```bash
 cd frontend
@@ -55,21 +57,53 @@ Logging:
 - The backend logs which LLM provider is active at startup.
 
 ## Running Evals
-Run the fully live eval harness (MaaJ + deterministic checks):
+Default local eval run:
 
 ```bash
 uv run python eval/run_eval.py
 ```
 
-Make sure Vertex credentials are available in your environment:
+This default path is fully local:
+- deterministic checks run locally
+- MaaJ-style cases are graded with local heuristic rules
+- no Vertex or external model credentials are required
+
+If you want a true cross-provider MaaJ path, run:
+
+```bash
+uv run python eval/run_eval.py --generator vertex --judge claude
+```
+
+For the Claude judge path, configure your own Anthropic key:
+
+```bash
+export ANTHROPIC_API_KEY=your-anthropic-api-key
+export ANTHROPIC_MODEL=claude-sonnet-4-20250514
+```
+
+If you want the optional Vertex judge path instead, run:
+
+```bash
+uv run python eval/run_eval.py --generator heuristic --judge vertex
+```
+
+For any Vertex-based path, configure your own credentials and project:
 
 ```bash
 export LLM_PROVIDER=vertex
-export VERTEX_PROJECT_ID=ieor-4576-jared
+export VERTEX_PROJECT_ID=your-project-id
 export VERTEX_LOCATION=us-central1
 export VERTEX_MODEL=gemini-2.5-flash-lite
 gcloud auth application-default login
 ```
+
+Notes:
+- `--judge vertex` is opt-in; the script does not require Vertex by default.
+- `--generator` and `--judge` are explicitly separated in the CLI.
+- the eval script refuses same-family `generator`/`judge` combinations such as `--generator vertex --judge vertex`
+- A runner uses their own Vertex credentials, not yours.
+- Claude judge runs use the runner's own Anthropic API key.
+- `--deterministic` is still available and explicitly forces local evaluation.
 
 ## API Endpoints
 - `POST /api/chat`

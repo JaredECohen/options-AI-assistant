@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -51,11 +51,21 @@ if FRONTEND_DIST.exists():
 @app.get("/")
 async def index():
     if FRONTEND_DIST.exists():
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return FileResponse(FRONTEND_DIST / "index.html", headers={"Cache-Control": "no-cache"})
     return HTMLResponse(
         "<h2>Frontend not built</h2><p>Run <code>npm install</code> and <code>npm run build</code> in <code>frontend/</code>, "
         "or run the Vite dev server with <code>npm run dev</code> and open <code>http://localhost:5173</code>.</p>"
     )
+
+
+@app.middleware("http")
+async def cache_control_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/assets/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    elif request.url.path == "/":
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 @app.get("/health")

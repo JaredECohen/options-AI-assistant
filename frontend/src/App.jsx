@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import './index.css';
 
 const viewToStrategies = {
@@ -49,6 +49,7 @@ const keyTerms = [
   { term: 'Vega', def: 'Change in option price for a 1% change in implied volatility.' },
   { term: 'Rho', def: 'Change in option price for a 1% change in interest rates.' },
   { term: 'Implied Volatility', def: 'Market-implied estimate of future price movement.' },
+  { term: 'Open Interest', def: 'Number of outstanding contracts that remain open for a strike and expiration.' },
 ];
 
 const exampleQuestions = [
@@ -98,6 +99,7 @@ export default function App() {
   const [showTerms, setShowTerms] = useState(false);
   const [showExamples, setShowExamples] = useState(false);
   const [loadingAction, setLoadingAction] = useState(null);
+  const chatLogRef = useRef(null);
 
   const sessionId = useMemo(() => {
     let stored = localStorage.getItem(sessionKey);
@@ -142,6 +144,13 @@ export default function App() {
       setView('');
     }
   }, [strategy, filteredViews, view]);
+
+  useEffect(() => {
+    if (!chatLogRef.current) {
+      return;
+    }
+    chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
+  }, [messages]);
 
   const appendMessage = (text) => {
     const trimmed = text.trim();
@@ -278,6 +287,13 @@ export default function App() {
 
         <div className="card">
           <div className="pill">Chat</div>
+          <div style={{ marginTop: '12px' }}>
+            <div className="chat-log" ref={chatLogRef}>
+              {messages.map((msg, idx) => (
+                <div key={`${idx}-${msg.slice(0, 8)}`} className="message">{msg}</div>
+              ))}
+            </div>
+          </div>
           <label htmlFor="message">Message</label>
           <textarea
             id="message"
@@ -297,13 +313,6 @@ export default function App() {
             <button className="secondary" id="clearChat" onClick={clearChat} disabled={loadingAction !== null}>
               Clear Chat
             </button>
-          </div>
-          <div style={{ marginTop: '12px' }}>
-            <div className="chat-log">
-              {messages.map((msg, idx) => (
-                <div key={`${idx}-${msg.slice(0, 8)}`} className="message">{msg}</div>
-              ))}
-            </div>
           </div>
         </div>
       </div>

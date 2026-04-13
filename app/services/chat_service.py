@@ -10,6 +10,7 @@ from app.core.safety import (
     ensure_sections,
     illegal_refusal_template,
     is_illegal_request,
+    is_trade_recommendation_request,
     off_topic_template,
 )
 from app.core.strategies import STRATEGIES, ALIASES, get_strategy, normalize_strategy_name
@@ -50,24 +51,36 @@ class ChatService:
         if is_payoff_intent(user_text, has_legs=bool(req.legs)):
             self._log("Routing to payoff", session_id=session_id)
             response = await self._handle_payoff(req)
+            response.response_text = attach_ticker_context(response.response_text, req.ticker, req.mode or "structured")
             self._record_turn(session_id, user_text, response.response_text, req, kind="payoff")
             return response
 
-        if (req.strategy or req.view) and not user_text.strip():
+        if mode == "structured" and not user_text.strip():
             self._log("Strategy builder selection", session_id=session_id)
             response = await self._handle_strategy_builder(req)
             if mode == "freeform":
                 response.response_text = to_freeform(response.response_text)
+            response.response_text = attach_ticker_context(response.response_text, req.ticker, mode)
             self._record_turn(session_id, user_text, response.response_text, req, kind="strategy")
             return response
 
         if is_illegal_request(user_text):
             self._log("Illegal request", session_id=session_id)
-            response_text = illegal_refusal_template()
-            if mode == "freeform":
-                response_text = to_freeform(response_text)
+            response_text = illegal_refusal_freeform() if mode == "freeform" else illegal_refusal_template()
             self._record_turn(session_id, user_text, response_text, req, kind="refusal")
             return ChatResponse(response_text=response_text)
+
+        direct_response = answer_known_question(
+            user_text,
+            mode,
+            selected_view=req.view,
+            selected_strategy=req.strategy,
+        )
+        if direct_response:
+            self._log("Direct answer", session_id=session_id)
+            direct_response = attach_ticker_context(direct_response, req.ticker, mode)
+            self._record_turn(session_id, user_text, direct_response, req, kind="answer")
+            return ChatResponse(response_text=direct_response)
 
         if not is_options_related(user_text) and not history:
             self._log("Off-topic request", session_id=session_id)
@@ -76,10 +89,14 @@ class ChatService:
             response_text = off_topic_template()
             return ChatResponse(response_text=response_text)
 
-        response_text = await self.llm_service.generate(build_context_message(user_text, req, history))
+        response_text = await self.llm_service.generate(
+            build_context_message(user_text, req, history),
+            ensure_structured_response=mode != "freeform",
+        )
         response_text = apply_backstop(response_text)
         if mode == "freeform":
             response_text = to_freeform(response_text)
+        response_text = attach_ticker_context(response_text, req.ticker, mode)
         self._record_turn(session_id, user_text, response_text, req, kind="answer")
         self._log("Chat response", session_id=session_id, length=len(response_text))
         return ChatResponse(response_text=response_text)
@@ -241,6 +258,27 @@ def render_payoff_response(computed: dict) -> str:
         "Computed JSON:\n"
         f"```json\n{json_block}\n```"
     )
+
+
+def attach_ticker_context(response_text: str, ticker: str | None, mode: str) -> str:
+    symbol = (ticker or "").upper().strip()
+    if not symbol:
+        return response_text
+
+    upper_text = response_text.upper()
+    if symbol in upper_text:
+        return response_text
+
+    if mode == "freeform":
+        stripped = response_text.strip()
+        if not stripped:
+            return response_text
+        return f"For {symbol}, {stripped[0].lower() + stripped[1:]}" if stripped[0].isupper() else f"For {symbol}, {stripped}"
+
+    marker = "Summary: "
+    if response_text.startswith(marker):
+        return f"{marker}For {symbol}, {response_text[len(marker):]}"
+    return response_text
 
 
 def infer_beliefs_from_legs(legs: list[dict]) -> str:
@@ -1793,6 +1831,8 @@ def _summarize_user_turn(req: ChatRequest, user_text: str) -> str:
 
 
 def to_freeform(text: str, keep_json: bool = False) -> str:
+    import re
+
     if not text:
         return ""
 
@@ -1834,6 +1874,8 @@ def to_freeform(text: str, keep_json: bool = False) -> str:
     if not paragraph:
         paragraph = text.strip()
 
+    paragraph = re.sub(r"(^|[.!?]\s+)(i)(['a-z])", lambda m: f"{m.group(1)}I{m.group(3)}", paragraph)
+
     if json_block:
         paragraph = f"{paragraph}\n\n{json_block}"
 
@@ -1842,7 +1884,14 @@ def to_freeform(text: str, keep_json: bool = False) -> str:
 
 def _clean_sentence(text: str) -> str:
     s = text.strip()
-    return s[:-1] if s.endswith(".") else s
+    return s[:-1] if s.endswith((".", "!", "?")) else s
+
+
+def _sentence_case(text: str) -> str:
+    s = text.strip()
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+    return s
 
 
 def _normalize_item(text: str) -> str:
@@ -1856,8 +1905,210 @@ def _normalize_item(text: str) -> str:
     return content
 
 
+def _is_question_like(text: str) -> bool:
+    lower = text.strip().lower()
+    if text.strip().endswith("?"):
+        return True
+    return lower.startswith(
+        (
+            "are ",
+            "is ",
+            "do ",
+            "does ",
+            "did ",
+            "can ",
+            "could ",
+            "would ",
+            "will ",
+            "should ",
+            "what ",
+            "which ",
+            "why ",
+            "how ",
+            "when ",
+            "where ",
+            "who ",
+            "have ",
+            "has ",
+            "had ",
+        )
+    )
+
+
+def _is_clause_like(text: str) -> bool:
+    lower = text.strip().lower()
+    if not lower:
+        return False
+    if _is_question_like(text):
+        return True
+    return lower.startswith(
+        (
+            "i ",
+            "you ",
+            "we ",
+            "they ",
+            "he ",
+            "she ",
+            "it ",
+            "it's ",
+            "this ",
+            "that ",
+            "these ",
+            "those ",
+            "there ",
+            "the ",
+            "a ",
+            "an ",
+            "tell me ",
+            "please tell me ",
+            "depends ",
+            "depend ",
+            "varies ",
+            "vary ",
+            "will depend ",
+            "can vary ",
+            "may vary ",
+            "can be ",
+            "may be ",
+            "will be ",
+            "profits ",
+            "profit ",
+            "losses ",
+            "loss ",
+            "price ",
+            "upside ",
+            "downside ",
+            "breakeven ",
+            "breakevens ",
+            "payoff ",
+            "p/l ",
+            "option ",
+            "options ",
+            "delta ",
+            "gamma ",
+            "theta ",
+            "vega ",
+            "rho ",
+            "implied ",
+            "time ",
+            "volatility ",
+            "market ",
+            "trading ",
+        )
+    )
+
+
+def _strip_placeholder_subject(text: str) -> str:
+    s = text.strip()
+    lower = s.lower()
+    prefixes = (
+        "this is ",
+        "this ",
+        "these are ",
+        "these ",
+        "it is ",
+        "it ",
+    )
+    useful_starts = (
+        "depends",
+        "depend",
+        "varies",
+        "vary",
+        "also varies",
+        "also depends",
+        "specific to",
+        "for when",
+        "the payoff",
+        "greeks ",
+        "options trading ",
+        "trading decisions ",
+        "can vary",
+        "may vary",
+        "will depend",
+    )
+    for prefix in prefixes:
+        if lower.startswith(prefix):
+            remainder = s[len(prefix) :].strip()
+            if remainder.lower().startswith(useful_starts):
+                return remainder
+    return s
+
+
+def _finish_sentence(text: str) -> str:
+    s = _sentence_case(_clean_sentence(text))
+    if not s:
+        return ""
+    return f"{s}?" if _is_question_like(text) else f"{s}."
+
+
+def _is_imperative_like(text: str) -> bool:
+    lower = text.strip().lower()
+    return lower.startswith(
+        (
+            "provide ",
+            "share ",
+            "tell me ",
+            "name ",
+            "choose ",
+            "pick ",
+            "enter ",
+            "use ",
+            "give ",
+        )
+    )
+
+
+def _prefixed_sentence(prefix: str, text: str) -> str:
+    content = _strip_placeholder_subject(_normalize_item(text))
+    if not content:
+        return ""
+    lower = content.lower()
+    if _is_question_like(content):
+        return _finish_sentence(content)
+    if lower.startswith(prefix.lower()):
+        return _finish_sentence(content)
+    return _finish_sentence(f"{prefix} {content}")
+
+
+def _format_limit_sentence(label: str, text: str) -> str:
+    content = _strip_placeholder_subject(_normalize_item(text))
+    if not content:
+        return ""
+    lower = content.lower()
+    if _is_question_like(content):
+        return _finish_sentence(content)
+    if label == "Upside" and lower.startswith("unlimited upside"):
+        return _finish_sentence(content)
+    if lower.startswith(
+        (
+            "the premium",
+            "the net debit",
+            "the net credit",
+            "premium",
+            "net debit",
+            "net credit",
+            "debit",
+            "credit",
+            "strike width",
+            "structural limits",
+            "long-premium",
+            "short-premium",
+        )
+    ):
+        return _finish_sentence(f"{label} is {content}")
+    if lower.startswith(("is ", "depends ", "depend ", "varies ", "vary ", "also varies ", "also depend ", "can be ", "may be ", "will be ")):
+        return _finish_sentence(f"{label} {content}")
+    if lower.startswith(("limited", "unlimited", "capped", "large", "small")):
+        return _finish_sentence(f"{label} is {content}")
+    if _is_clause_like(content):
+        return _finish_sentence(content)
+    return _finish_sentence(f"{label} is {content}")
+
+
 def _should_prefix_it(text: str) -> bool:
     lower = text.strip().lower()
+    if _is_clause_like(text):
+        return False
     if lower.startswith(
         (
             "if ",
@@ -2089,11 +2340,17 @@ def to_freeform_general(sections: dict) -> str:
         summary_raw = sections["Summary"].strip()
         summary_clean = _clean_sentence(summary_raw)
         summary_lower = summary_clean.lower()
+        if summary_lower.startswith("it's a to "):
+            summary_clean = "To " + summary_clean[len("It's a to ") :].lstrip()
+            summary_lower = summary_clean.lower()
         if summary_lower.startswith(
             (
                 "here is",
                 "this is",
+                "it's ",
+                "it is ",
                 "comparison of",
+                "to ",
                 "convexity ",
                 "strike selection",
                 "expiration selection",
@@ -2106,6 +2363,8 @@ def to_freeform_general(sections: dict) -> str:
             )
         ):
             sentences.append(summary_clean + ".")
+        elif _is_clause_like(summary_clean):
+            sentences.append(_finish_sentence(summary_clean))
         elif summary_clean.startswith(("A ", "An ", "The ")) or " is " in summary_clean or " are " in summary_clean:
             sentences.append(f"{summary_clean}.")
         else:
@@ -2125,19 +2384,30 @@ def to_freeform_general(sections: dict) -> str:
         else:
             setup = _normalize_item(setup_raw)
             setup = _strip_strategy_subject(setup)
-            if setup.startswith(("buy ", "sell ", "own ", "hold ")):
+            if _is_clause_like(setup):
+                sentences.append(_finish_sentence(setup))
+            elif _is_imperative_like(setup):
+                sentences.append(_finish_sentence(setup))
+            elif setup.startswith(("buy ", "sell ", "own ", "hold ")):
                 sentences.append(f"The setup is to {setup}.")
             else:
                 sentences.append(f"The setup is {setup}.")
     if sections.get("Payoff at Expiration"):
         payoff = _normalize_item(sections["Payoff at Expiration"])
+        payoff = _strip_placeholder_subject(payoff)
         payoff_lower = payoff.lower()
         if payoff.startswith("profit rises"):
-            payoff = payoff.replace("profit rises", "profits as price rises", 1)
+            payoff = payoff.replace("profit rises", "profits", 1)
         if payoff.startswith("profit "):
             payoff = "profits " + payoff[len("profit ") :]
-        if "expiration" in payoff_lower or "expires" in payoff_lower:
-            sentences.append(_clean_sentence(payoff) + ".")
+        if payoff.startswith("computed from"):
+            sentences.append(_finish_sentence(f"At expiration, the payoff is {payoff}"))
+        elif "expiration" in payoff_lower or "expires" in payoff_lower:
+            sentences.append(_finish_sentence(payoff))
+        elif _is_question_like(payoff):
+            sentences.append(_finish_sentence(payoff))
+        elif _is_clause_like(payoff):
+            sentences.append(_finish_sentence(f"At expiration, {payoff}"))
         elif ";" in payoff:
             sentences.append(f"At expiration, {payoff}.")
         else:
@@ -2149,46 +2419,91 @@ def to_freeform_general(sections: dict) -> str:
         max_profit = sections.get("Max Profit")
         max_loss = sections.get("Max Loss")
         if max_profit and max_loss:
-            profit_phrase = _normalize_item(max_profit)
-            loss_phrase = _normalize_item(max_loss)
+            profit_phrase = _strip_placeholder_subject(_normalize_item(max_profit))
+            loss_phrase = _strip_placeholder_subject(_normalize_item(max_loss))
             if any(term in profit_phrase for term in ["with ", "for ", "positive", "negative", "convexity"]) or any(
                 term in loss_phrase for term in ["with ", "for ", "positive", "negative", "convexity"]
             ):
                 sentences.append(f"On the upside, {profit_phrase}.")
                 sentences.append(f"On the downside, {loss_phrase}.")
             else:
-                sentences.append(f"Upside is {profit_phrase}, while downside is {loss_phrase}.")
+                upside_sentence = _format_limit_sentence("Upside", profit_phrase)
+                downside_sentence = _format_limit_sentence("Downside", loss_phrase)
+                if upside_sentence.startswith("Upside") and downside_sentence.startswith("Downside"):
+                    sentences.append(
+                        f"{_clean_sentence(upside_sentence)} while {_clean_sentence(downside_sentence).lower()}."
+                    )
+                else:
+                    sentences.append(upside_sentence)
+                    sentences.append(downside_sentence)
         elif max_profit:
-            profit_phrase = _normalize_item(max_profit)
+            profit_phrase = _strip_placeholder_subject(_normalize_item(max_profit))
             if any(term in profit_phrase for term in ["with ", "for ", "positive", "negative", "convexity"]):
                 sentences.append(f"On the upside, {profit_phrase}.")
             else:
-                sentences.append(f"Upside is {profit_phrase}.")
+                sentences.append(_format_limit_sentence("Upside", profit_phrase))
         elif max_loss:
-            loss_phrase = _normalize_item(max_loss)
+            loss_phrase = _strip_placeholder_subject(_normalize_item(max_loss))
             if any(term in loss_phrase for term in ["with ", "for ", "positive", "negative", "convexity"]):
                 sentences.append(f"On the downside, {loss_phrase}.")
             else:
-                sentences.append(f"Downside is {loss_phrase}.")
+                sentences.append(_format_limit_sentence("Downside", loss_phrase))
     if sections.get("Breakeven(s)"):
-        breakeven = _normalize_item(sections["Breakeven(s)"])
-        if breakeven.startswith("depend"):
+        breakeven = _strip_placeholder_subject(_normalize_item(sections["Breakeven(s)"]))
+        if breakeven.startswith("depend on"):
             cleaned = breakeven.replace("depend on", "", 1).strip()
             sentences.append(f"Breakevens depend on {cleaned}.")
+        elif breakeven.startswith("computed from"):
+            sentences.append(_finish_sentence(f"Breakevens are {breakeven}"))
+        elif breakeven.startswith(("depends ", "depend ", "varies ", "vary ", "will depend ", "can vary ", "may vary ")):
+            sentences.append(_finish_sentence(f"Breakevens {breakeven}"))
         else:
             sentences.append(f"Breakevens are {breakeven}.")
     if sections.get("Key Sensitivities"):
-        sentences.append(f"Key sensitivities include {_normalize_item(sections['Key Sensitivities'])}.")
+        sensitivities = _normalize_item(sections["Key Sensitivities"])
+        if sensitivities.startswith("i can "):
+            sentences.append(_finish_sentence(sensitivities))
+        else:
+            sentences.append(f"Key sensitivities include {sensitivities}.")
     if sections.get("Typical Use Case"):
-        use_case = _normalize_item(sections["Typical Use Case"])
-        if use_case.startswith("expecting"):
+        use_case = _strip_placeholder_subject(_normalize_item(sections["Typical Use Case"]))
+        if use_case.startswith("for when "):
+            sentences.append(_finish_sentence(f"A common use case is when {use_case[len('for when '):]}"))
+        elif use_case.startswith("use "):
+            sentences.append(_finish_sentence(f"A common use case is to {use_case}"))
+        elif use_case.startswith("expecting"):
             use_case = use_case.replace("expecting big ", "expecting a big ")
             use_case = use_case.replace("expecting large ", "expecting a large ")
             sentences.append(f"A common use case is when {use_case}.")
+        elif use_case.startswith(("depends ", "depend ", "varies ", "vary ", "will depend ", "can vary ", "may vary ")):
+            sentences.append(_finish_sentence(f"A common use case {use_case}"))
+        elif use_case.lower().startswith(("a ", "an ", "the ")):
+            sentences.append(_finish_sentence(f"A common use case is {use_case}"))
+        elif _is_clause_like(use_case):
+            sentences.append(_finish_sentence(use_case))
         else:
             sentences.append(f"A common use case is {use_case}.")
     if sections.get("Main Risks"):
-        sentences.append(f"Main risks include {_normalize_item(sections['Main Risks'])}.")
+        main_risks = _strip_placeholder_subject(_normalize_item(sections["Main Risks"]))
+        if main_risks.startswith(("depends ", "depend ", "varies ", "vary ", "will depend ", "can vary ", "may vary ")):
+            sentences.append(_finish_sentence(f"Main risks {main_risks}"))
+        elif main_risks.lower().startswith(
+            (
+                "time decay",
+                "iv crush",
+                "opportunity cost",
+                "large move",
+                "sharp move",
+                "loss",
+                "losses",
+                "insufficient",
+            )
+        ):
+            sentences.append(_finish_sentence(f"Main risks include {main_risks}"))
+        elif _is_clause_like(main_risks):
+            sentences.append(_finish_sentence(main_risks))
+        else:
+            sentences.append(f"Main risks include {main_risks}.")
     if sections.get("Assumptions / What I need from you"):
         sentences.append(_clean_sentence(sections["Assumptions / What I need from you"]) + ".")
 
@@ -2201,6 +2516,169 @@ def off_topic_freeform(user_text: str) -> str:
         "Ask me about a specific strategy, a market view (bullish/bearish/neutral/volatile), "
         "or how strike and expiration choices affect payoffs."
     )
+
+
+def format_moneyness_freeform() -> str:
+    return (
+        "Moneyness describes where the strike sits relative to the stock price. "
+        "A call is in the money when the stock is above the strike, at the money when it's near the strike, and out of the money when the stock is below it; for puts, that relationship is reversed. "
+        "Moneyness affects premium, delta, and how likely the option is to finish with intrinsic value. "
+        "If you want, I can apply that to a specific strike or strategy."
+    )
+
+
+def format_intrinsic_value_freeform() -> str:
+    return (
+        "Intrinsic value is the immediate exercise value of an option. "
+        "For a call, it's max(stock price minus strike, 0); for a put, it's max(strike minus stock price, 0). "
+        "If an option is out of the money, its intrinsic value is zero. "
+        "Anything above intrinsic value is extrinsic value."
+    )
+
+
+def format_extrinsic_value_freeform() -> str:
+    return (
+        "Extrinsic value is the portion of an option's premium above its intrinsic value. "
+        "It reflects time remaining, implied volatility, interest rates, and the probability the option could become more valuable before expiration. "
+        "Extrinsic value decays with time, especially as expiration approaches. "
+        "At expiration, extrinsic value goes to zero."
+    )
+
+
+def format_assignment_freeform() -> str:
+    return (
+        "Assignment happens when a short option is exercised against you. "
+        "If you're short a call, assignment means you may have to deliver shares; if you're short a put, you may have to buy shares at the strike price. "
+        "American-style equity options can be assigned before expiration, though assignment risk is usually highest near expiration or around dividends. "
+        "Defined-risk spreads can still be assigned on the short leg, so it's important to manage them before expiration."
+    )
+
+
+def format_breakeven_freeform() -> str:
+    return (
+        "Breakeven is the stock price where the position's profit and loss is zero at expiration. "
+        "For a long call, it's strike plus premium; for a long put, it's strike minus premium. "
+        "For spreads and multi-leg trades, breakevens shift by the net debit or credit you paid or received. "
+        "If you give me the exact legs, I can compute the breakeven precisely."
+    )
+
+
+def format_key_terms_freeform() -> str:
+    return (
+        "The core beginner terms are call, put, strike, expiration, premium, intrinsic value, extrinsic value, moneyness, breakeven, assignment, and the main Greeks: delta, gamma, theta, vega, and rho. "
+        "If you're learning in order, start with call/put, strike, expiration, premium, and moneyness first, then add breakeven and the Greeks. "
+        "Once those are clear, strategies like spreads, covered calls, and straddles make much more sense. "
+        "I can walk through any of those one by one."
+    )
+
+
+def illegal_refusal_freeform() -> str:
+    return (
+        "I can’t help with illegal activity. "
+        "If you want legal, educational help, I can explain options mechanics, strategy trade-offs, or evaluate a position if you share the legs."
+    )
+
+
+def answer_known_question(
+    user_text: str,
+    mode: str,
+    selected_view: str | None = None,
+    selected_strategy: str | None = None,
+) -> str | None:
+    lower = (user_text or "").lower()
+    if not lower.strip():
+        return None
+
+    selected_view = (selected_view or "").lower() or None
+    selected_strategy = normalize_strategy_name(selected_strategy or "") if selected_strategy else None
+
+    if is_illegal_request(lower):
+        return illegal_refusal_freeform() if mode == "freeform" else illegal_refusal_template()
+
+    greek_terms = extract_greek_terms(lower)
+    if greek_terms:
+        if mode == "freeform":
+            if len(greek_terms) == 1:
+                if greek_terms[0] == "convexity":
+                    return format_convexity_freeform()
+                return format_greek_freeform(greek_terms[0])
+            return format_greek_comparison_freeform(greek_terms)
+        if len(greek_terms) == 1:
+            return format_greek_structured(greek_terms[0])
+        return format_greek_comparison_structured(greek_terms)
+
+    view = detect_view_from_text(lower) or selected_view
+    if "income" in lower and view:
+        if mode == "freeform":
+            return income_view_suggestions_freeform(view, lower)
+        return income_view_suggestions_structured(view, lower)
+
+    if view and any(term in lower for term in ["strategy", "strategies", "trade", "trades", "fit", "fits"]):
+        if mode == "freeform":
+            return view_trade_suggestions_freeform(view, lower)
+        return view_trade_suggestions_structured(view, lower)
+
+    if is_view_menu_request(lower) and view:
+        return view_trade_suggestions_freeform(view, lower) if mode == "freeform" else view_trade_suggestions_structured(view, lower)
+
+    if is_trade_recommendation_request(lower) and view:
+        if mode == "freeform":
+            return view_trade_suggestions_freeform(view, lower)
+        return view_trade_suggestions_structured(view, lower)
+
+    if is_strike_selection_question(lower) and selected_strategy:
+        text = format_strike_selection_structured(selected_strategy)
+        return to_freeform(text) if mode == "freeform" else text
+
+    if ("option payoffs" in lower or "payoffs" in lower and "option" in lower) and not extract_strategies(lower):
+        return format_payoff_mechanics_freeform() if mode == "freeform" else format_payoff_mechanics_structured()
+
+    if is_long_short_comparison_question(lower) or "difference between long options and short options" in lower:
+        return format_long_short_comparison_freeform() if mode == "freeform" else format_long_short_comparison_structured()
+
+    if "otm" in lower and "call" in lower and "%" in lower:
+        return None
+
+    basic_option = detect_basic_option_question(lower)
+    if basic_option:
+        text = format_basic_option_structured(basic_option)
+        return to_freeform(text) if mode == "freeform" else text
+
+    if is_payoff_mechanics_question(lower) and not extract_strategies(lower):
+        return format_payoff_mechanics_freeform() if mode == "freeform" else format_payoff_mechanics_structured()
+
+    if is_long_short_comparison_question(lower):
+        return format_long_short_comparison_freeform() if mode == "freeform" else format_long_short_comparison_structured()
+
+    if is_expiration_selection_question(lower):
+        text = format_expiration_selection_structured(selected_strategy or "")
+        return to_freeform(text) if mode == "freeform" else text
+
+    if "assignment" in lower and any(term in lower for term in ["what is", "how does", "explain", "work"]):
+        text = format_assignment_freeform()
+        return text if mode == "freeform" else ensure_sections(text)
+
+    if "moneyness" in lower:
+        text = format_moneyness_freeform()
+        return text if mode == "freeform" else ensure_sections(text)
+
+    if "intrinsic value" in lower:
+        text = format_intrinsic_value_freeform()
+        return text if mode == "freeform" else ensure_sections(text)
+
+    if "extrinsic value" in lower or "time value" in lower:
+        text = format_extrinsic_value_freeform()
+        return text if mode == "freeform" else ensure_sections(text)
+
+    if "breakeven" in lower and any(term in lower for term in ["what is", "how does", "explain"]) and not extract_strategies(lower):
+        text = format_breakeven_freeform()
+        return text if mode == "freeform" else ensure_sections(text)
+
+    if "key terms" in lower or ("beginner" in lower and "term" in lower):
+        text = format_key_terms_freeform()
+        return text if mode == "freeform" else ensure_sections(text)
+
+    return None
 
 
 def _lead_in_phrase(seed: str) -> str:
@@ -2381,6 +2859,7 @@ def is_payoff_mechanics_question(text: str) -> bool:
         "payoff at expiration",
         "payoffs at expiration",
         "expiration payoff",
+        "option payoffs",
         "how do breakevens work",
         "breakevens work",
     ]
@@ -2601,10 +3080,15 @@ def is_options_related(text: str) -> bool:
         "convexity",
         "implied volatility",
         "iv",
+        "moneyness",
+        "intrinsic",
+        "extrinsic",
+        "time value",
         "breakeven",
         "payoff",
         "assignment",
         "exercise",
+        "key terms",
         "bullish",
         "bearish",
         "neutral",
