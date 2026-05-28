@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # --- Backtesting engine: ruff + mypy(strict) + pytest with coverage --------
+  engine:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: backtesting-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv pip install --system -e ".[dev]"
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      - run: mypy
+      - run: pytest --cov=backtesting_engine --cov-report=term-missing --cov-fail-under=80 tests
+
+  # --- OptionsCoach extensions: module tests + deterministic evals -----------
+  optionscoach:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install ${{ matrix.python-version }}
+      # Install the vendored engine plus the analytics/UI dependencies.
+      - run: uv pip install --system -e ./backtesting-engine numpy pandas scipy plotly pytest ruff
+      - name: Ruff (optionscoach + apps + eval)
+        run: ruff check src apps eval app/services/optionscoach_tools.py conftest.py tests/optionscoach
+      - name: Pytest (optionscoach modules)
+        run: pytest tests/optionscoach -q
+      - name: Deterministic OptionsCoach evals
+        run: python eval/optionscoach_eval.py
