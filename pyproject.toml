@@ -1,7 +1,7 @@
 [project]
 name = "options-chatbot"
-version = "0.1.0"
-description = "Options strategy explainer and payoff calculator with live premiums"
+version = "0.2.0"
+description = "OptionsCoach.AI — options strategy explainer, analytics, screener, backtester and IV surface"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,7 +12,50 @@ dependencies = [
   "python-dotenv>=1.0",
   "cachetools>=5.3",
   "google-cloud-aiplatform>=1.67",
+  # OptionsCoach analytics/screener/backtester/surface modules:
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "scipy>=1.11",
+  # The backtesting engine. A standalone GitHub repo could not be created from
+  # the build environment (see BLOCKERS.md); until it exists, install from the
+  # vendored path below. Swap to the git URL once the repo is published:
+  #   "backtesting-engine @ git+https://github.com/JaredECohen/backtesting-engine"
+  "backtesting-engine",
+]
+
+[project.optional-dependencies]
+# Streamlit UI + plotting (app extra). Install with: uv sync --extra app
+app = [
+  "streamlit>=1.36",
+  "plotly>=5.22",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
 ]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+backtesting-engine = { path = "backtesting-engine", editable = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-existing chatbot eval runner: long argparse help/format strings.
+"eval/run_eval.py" = ["E501"]
+# Streamlit pages run top-level code after a sys.path shim, so imports are E402.
+"apps/streamlit/*" = ["E402"]
+"apps/streamlit/pages/*" = ["E402"]

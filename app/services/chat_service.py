@@ -18,6 +18,10 @@ from app.models import ChatRequest, ChatResponse, OptionLeg, StockLeg
 from app.providers.options.base import OptionsDataProvider
 from app.services.llm_service import LLMService
 from app.services.memory_store import MemoryStore
+from app.services import optionscoach_tools
+
+# Supported tickers for the analytics tool (offline synthetic data).
+_ANALYTICS_TICKERS = ("SPY", "QQQ", "IWM")
 
 
 class ChatService:
@@ -68,6 +72,14 @@ class ChatService:
             self._log("Illegal request", session_id=session_id)
             response_text = illegal_refusal_freeform() if mode == "freeform" else illegal_refusal_template()
             self._record_turn(session_id, user_text, response_text, req, kind="refusal")
+            return ChatResponse(response_text=response_text)
+
+        analytics_intent = detect_analytics_intent(user_text, req.ticker)
+        if analytics_intent is not None:
+            self._log("Analytics tool call", session_id=session_id, intent=analytics_intent)
+            response_text = answer_analytics_question(analytics_intent)
+            response_text = attach_ticker_context(response_text, req.ticker, mode)
+            self._record_turn(session_id, user_text, response_text, req, kind="analytics")
             return ChatResponse(response_text=response_text)
 
         direct_response = answer_known_question(
@@ -387,6 +399,51 @@ def infer_beliefs_from_legs(legs: list[dict]) -> str:
                 return "Neutral to mildly bullish; expects price to stay above the short put (bull put spread)."
 
     return "Depends on the full structure; share your intent if you want a more tailored interpretation."
+
+
+def detect_analytics_intent(text: str, ticker: str | None) -> dict | None:
+    """Detect a quantitative analytics question and return a tool-call spec.
+
+    Currently routes IV-rank / IV-percentile / implied-vol questions to the
+    ``get_iv_rank`` tool. Returns ``None`` when no analytics intent is present.
+    """
+    if not text:
+        return None
+    lowered = text.lower()
+    iv_terms = ("iv rank", "iv percentile", "implied vol", "implied volatility", "iv on", "iv for")
+    if not any(term in lowered for term in iv_terms):
+        return None
+    # Resolve a ticker from the message or the request context.
+    found = None
+    for sym in _ANALYTICS_TICKERS:
+        if sym.lower() in lowered or f"${sym.lower()}" in lowered:
+            found = sym
+            break
+    if found is None and ticker and ticker.upper() in _ANALYTICS_TICKERS:
+        found = ticker.upper()
+    if found is None:
+        return None
+    return {"tool": "get_iv_rank", "ticker": found}
+
+
+def answer_analytics_question(intent: dict) -> str:
+    """Run the analytics tool for ``intent`` and format a deterministic answer."""
+    try:
+        result = optionscoach_tools.dispatch_tool("get_iv_rank", {"ticker": intent["ticker"]})
+    except Exception as exc:  # pragma: no cover - defensive
+        return (
+            f"I couldn't compute analytics right now ({exc}). IV rank measures where current "
+            "implied volatility sits between its trailing 1-year low and high."
+        )
+    return (
+        f"{result['ticker']} IV rank is {result['iv_rank']:.0f} "
+        f"(IV percentile {result['iv_percentile']:.0f}) as of {result['asof']}. "
+        f"ATM implied volatility is about {result['atm_iv'] * 100:.1f}% versus a 20-day "
+        f"historical volatility of {(result['hv_20'] or 0) * 100:.1f}%. IV rank scales current "
+        "implied volatility between its trailing 1-year low (0) and high (100): a high reading "
+        "means options are relatively expensive, which favors premium-selling strategies, while "
+        "a low reading favors premium-buying. (Computed from deterministic offline data.)"
+    )
 
 
 def is_payoff_intent(text: str, has_legs: bool = False) -> bool:

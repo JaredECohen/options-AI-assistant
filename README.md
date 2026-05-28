@@ -13,6 +13,49 @@ This project is a narrow-domain chatbot that explains listed equity options stra
 - Remembers recent chat context per browser session; use "Clear Chat" to reset
   - Server-side memory is kept in-process; use the Clear Chat button to reset the session
 
+## OptionsCoach.AI Extensions (analytics, screener, backtester, surface)
+
+Beyond the chatbot, this repo now ships four quantitative modules under
+`src/optionscoach/`, built on the vendored [`backtesting-engine`](./backtesting-engine/)
+(see [BLOCKERS.md](./BLOCKERS.md) for why the engine lives in-repo for now):
+
+- **`optionscoach.analytics`** — vectorized implied-volatility solver, historical
+  volatility (10/20/60/252-day windows), IV rank & IV percentile (252-day
+  lookback), Black-Scholes greeks, and liquidity helpers (spread, relative
+  spread, volume, OI).
+- **`optionscoach.screener`** — a dict-based filter DSL (`lt, le, gt, ge, eq,
+  between`, plus `min_`/`max_` shorthands) and three starter screens:
+  `cheap_by_hv`, `high_iv_rank`, `iv_hv_gap`.
+- **`optionscoach.backtester`** — pre-built strategies (`CoveredCall`,
+  `CashSecuredPut`, `ShortPut`, `ShortStraddle`, `ShortStrangle`, `IronCondor`)
+  wrapping the engine, each configurable by `target_delta`, `dte`,
+  `profit_target_pct`, `stop_loss_multiple`, `time_exit_dte`.
+- **`optionscoach.surface`** — IV-surface fitting (bilinear over log-moneyness ×
+  time-to-expiry, with a `Surface` Protocol hook for SVI/SABR later), skew curves
+  per expiry, term structure per moneyness bucket, and a Plotly 3D renderer.
+
+The chatbot can now answer quantitative questions like *"What's the IV rank on
+SPY?"* via an analytics tool call (see `app/services/optionscoach_tools.py`).
+
+### Launching the Streamlit app
+
+```bash
+uv sync --extra app          # installs streamlit + plotly + the engine (path dep)
+streamlit run apps/streamlit/Home.py
+```
+
+Pages: **Analytics**, **Screener**, **Backtester**, **Surface**. Tickers default
+to SPY/QQQ/IWM and date pickers to the last ~252 trading days. By default the
+pages use the deterministic synthetic data source (no credentials); set
+`OPTIONSCOACH_LIVE=1` together with `FMP_API_KEY` to pull live equity data.
+
+### Running the OptionsCoach tests
+
+```bash
+uv run pytest tests/optionscoach          # the four module test suites
+uv run python eval/optionscoach_eval.py   # deterministic IV/screener/backtest checks
+```
+
 ## Local Setup
 1. Create and activate a virtual env if desired.
 2. Install dependencies with uv:

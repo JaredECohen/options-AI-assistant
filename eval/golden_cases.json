@@ -812,5 +812,52 @@
         "illegal"
       ]
     }
+  },
+  {
+    "id": "in_19",
+    "category": "in_domain",
+    "input": {
+      "message": "What's the IV rank on SPY?"
+    },
+    "maaj": {
+      "type": "golden",
+      "expected": "Reports SPY's IV rank with a brief explanation that IV rank scales current implied volatility between its 1-year low and high.",
+      "keywords": [
+        "iv rank",
+        "spy",
+        "implied volatility",
+        "percentile"
+      ]
+    },
+    "deterministic": {
+      "requires_headings": false,
+      "summary_keywords": [
+        "iv rank",
+        "spy"
+      ]
+    }
+  },
+  {
+    "id": "in_20",
+    "category": "in_domain",
+    "input": {
+      "message": "Tell me the implied volatility rank for QQQ"
+    },
+    "maaj": {
+      "type": "golden",
+      "expected": "Reports QQQ's IV rank and explains the metric.",
+      "keywords": [
+        "iv rank",
+        "qqq",
+        "implied volatility"
+      ]
+    },
+    "deterministic": {
+      "requires_headings": false,
+      "summary_keywords": [
+        "iv rank",
+        "qqq"
+      ]
+    }
   }
 ]

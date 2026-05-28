@@ -3,7 +3,6 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any, Dict, Tuple
 
 from dotenv import load_dotenv
 
@@ -14,6 +13,7 @@ if REPO_ROOT not in sys.path:
 
 # Load repo .env so local evals pick up API keys and provider config without manual export.
 load_dotenv(os.path.join(REPO_ROOT, ".env"))
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -39,7 +39,7 @@ def parse_args():
 
 
 def load_cases(path: str) -> list[dict]:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -96,7 +96,9 @@ async def build_services():
     return ChatService(options_provider, llm_service, memory_store)
 
 
-async def run_case(chat_service, case: dict, judge_provider=None, deterministic=False) -> Tuple[bool, Dict[str, bool]]:
+async def run_case(
+    chat_service, case: dict, judge_provider=None, deterministic=False
+) -> tuple[bool, dict[str, bool]]:
     from app.models import ChatRequest
 
     payload = dict(case["input"])
@@ -114,7 +116,9 @@ async def run_case(chat_service, case: dict, judge_provider=None, deterministic=
     requires_refusal = case.get("deterministic", {}).get("requires_refusal", False)
     if requires_refusal:
         text = response.response_text.lower()
-        deterministic_checks["refusal"] = any(t in text for t in ["illegal", "cannot", "can't", "not allowed"])
+        deterministic_checks["refusal"] = any(
+            t in text for t in ["illegal", "cannot", "can't", "not allowed"]
+        )
     else:
         deterministic_checks["refusal"] = True
 
@@ -141,19 +145,25 @@ async def run_case(chat_service, case: dict, judge_provider=None, deterministic=
     requires_moneyness = case.get("deterministic", {}).get("requires_moneyness", False)
     if requires_moneyness:
         text = response.response_text.lower()
-        deterministic_checks["moneyness"] = "%" in text or "otm" in text or "out of the money" in text
+        deterministic_checks["moneyness"] = (
+            "%" in text or "otm" in text or "out of the money" in text
+        )
     else:
         deterministic_checks["moneyness"] = True
 
     forbidden_phrases = case.get("deterministic", {}).get("forbidden_phrases", [])
     if forbidden_phrases:
         text = response.response_text.lower()
-        deterministic_checks["forbidden_phrases"] = all(phrase.lower() not in text for phrase in forbidden_phrases)
+        deterministic_checks["forbidden_phrases"] = all(
+            phrase.lower() not in text for phrase in forbidden_phrases
+        )
     else:
         deterministic_checks["forbidden_phrases"] = True
 
     summary_keywords = case.get("deterministic", {}).get("summary_keywords", [])
-    deterministic_checks["summary_keywords"] = summary_keywords_present(summary_keywords, response.response_text)
+    deterministic_checks["summary_keywords"] = summary_keywords_present(
+        summary_keywords, response.response_text
+    )
 
     requires_autofill = case.get("deterministic", {}).get("requires_premium_autofill", False)
     if requires_autofill:
@@ -191,7 +201,9 @@ async def llm_judge(provider, maaj: dict, response_text: str) -> bool:
         f"Rubric: {rubric}\n"
         f"Response: {response_text}\n"
     )
-    verdict = await provider.generate(system="Judge", user=judge_prompt, max_output_tokens=120, temperature=0.0)
+    verdict = await provider.generate(
+        system="Judge", user=judge_prompt, max_output_tokens=120, temperature=0.0
+    )
     return verdict.strip().upper().startswith("PASS")
 
 
@@ -224,7 +236,9 @@ async def main_async():
             judge_provider = VertexProvider()
         except Exception:
             judge_provider = None
-            print("Warning: Vertex judge requested but unavailable; falling back to local heuristic judging.")
+            print(
+                "Warning: Vertex judge requested but unavailable; falling back to local heuristic judging."
+            )
     elif args.judge == "claude":
         try:
             from app.providers.llm.anthropic import AnthropicProvider
@@ -232,9 +246,13 @@ async def main_async():
             judge_provider = AnthropicProvider()
         except Exception:
             judge_provider = None
-            print("Warning: Claude judge requested but unavailable; falling back to local heuristic judging.")
+            print(
+                "Warning: Claude judge requested but unavailable; falling back to local heuristic judging."
+            )
 
-    print(f"Eval config: generator={args.generator} judge={args.judge} deterministic={deterministic}")
+    print(
+        f"Eval config: generator={args.generator} judge={args.judge} deterministic={deterministic}"
+    )
 
     results = []
     category_totals = {}
@@ -267,7 +285,9 @@ async def main_async():
                 raise
         results.append((case["id"], case["category"], passed, checks))
         category_totals[case["category"]] = category_totals.get(case["category"], 0) + 1
-        category_pass[case["category"]] = category_pass.get(case["category"], 0) + (1 if passed else 0)
+        category_pass[case["category"]] = category_pass.get(case["category"], 0) + (
+            1 if passed else 0
+        )
 
     def has_deterministic_metric(checks: dict) -> bool:
         for key in [
@@ -297,8 +317,13 @@ async def main_async():
     overall = sum(1 for _, _, passed, _ in results if passed) / len(results)
     print(f"\nOverall: {overall:.0%}")
 
+    # Deterministic OptionsCoach analytics/screener/backtester checks (offline).
+    from optionscoach_eval import run_all as run_optionscoach_evals
+
+    optionscoach_ok = run_optionscoach_evals()
+
     # non-zero exit on failure
-    if any(not passed for _, _, passed, _ in results):
+    if any(not passed for _, _, passed, _ in results) or not optionscoach_ok:
         sys.exit(1)
 
 
