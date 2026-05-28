@@ -10,13 +10,14 @@ with no network access or credentials.
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+from datetime import date
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 
 from backtesting_engine.core.types import OptionRight
-from backtesting_engine.pricing import as_option_type, bs_price, greeks
+from backtesting_engine.pricing import as_option_type, bs_price
 
 
 class SyntheticOptionsAdapter:
@@ -32,8 +33,10 @@ class SyntheticOptionsAdapter:
         Drift and volatility of the GBM price process.
     base_iv, skew, term_slope:
         Volatility-surface shape parameters (see module docstring).
-    dtes:
-        Days-to-expiry offsets that define the available expiries in a chain.
+    n_expiries:
+        Number of monthly (third-Friday) expiries listed in each chain. Expiries
+        are **fixed calendar dates**, so an option listed today is still listed on
+        later days — which is what makes position management / early exits work.
     strike_pct_range, n_strikes:
         Strikes span ``start*(1 ± range)`` with ``n_strikes`` per side.
     """
@@ -50,7 +53,7 @@ class SyntheticOptionsAdapter:
         base_iv: float = 0.20,
         skew: float = 0.15,
         term_slope: float = 0.03,
-        dtes: tuple[int, ...] = (30, 60, 90, 120, 150, 180),
+        n_expiries: int = 8,
         strike_pct_range: float = 0.30,
         n_strikes: int = 12,
         r: float = 0.0,
@@ -63,11 +66,14 @@ class SyntheticOptionsAdapter:
         self.base_iv = base_iv
         self.skew = skew
         self.term_slope = term_slope
-        self.dtes = dtes
+        self.n_expiries = n_expiries
         self.strike_pct_range = strike_pct_range
         self.n_strikes = n_strikes
         self.r = r
         self.q = q
+        # A FIXED strike ladder (multiples of this step) so a listed strike stays
+        # listed as spot drifts — required for closing/marking open positions.
+        self.strike_step = max(1.0, round(start_price * strike_pct_range / n_strikes))
         self._paths: dict[str, pd.DataFrame] = {}
 
     # -- price path -------------------------------------------------------
@@ -124,56 +130,118 @@ class SyntheticOptionsAdapter:
         return float(upto["close"].iloc[-1])
 
     # -- option chain -----------------------------------------------------
-    def _iv(self, spot: float, strike: float, t: float) -> float:
-        log_m = math.log(strike / spot)
-        iv = (
+    @staticmethod
+    def _third_friday(year: int, month: int) -> date:
+        """Return the third Friday of ``year``/``month`` (the standard expiry)."""
+        d = date(year, month, 1)
+        # weekday(): Monday=0 .. Friday=4. Days to the first Friday, then +14.
+        first_friday = 1 + ((4 - d.weekday()) % 7)
+        return date(year, month, first_friday + 14)
+
+    def _expiries(self, asof: date) -> list[date]:
+        """The next ``n_expiries`` monthly third-Friday expiries strictly after ``asof``."""
+        expiries: list[date] = []
+        year, month = asof.year, asof.month
+        while len(expiries) < self.n_expiries:
+            exp = self._third_friday(year, month)
+            if exp > asof:
+                expiries.append(exp)
+            month += 1
+            if month > 12:
+                month, year = 1, year + 1
+        return expiries
+
+    def _expiry_frame(self, spot: float, expiry: date, t: float) -> pd.DataFrame:
+        """Vectorized Black-Scholes chain for a single expiry (calls + puts).
+
+        Uses numpy + vectorized ``scipy.stats.norm`` so a full chain is generated
+        with a handful of array ops instead of thousands of scalar greek calls.
+        Greek conventions match :func:`backtesting_engine.pricing.greeks`
+        (theta per day, vega per vol point, rho per rate point).
+        """
+        # Fixed ladder: multiples of ``strike_step`` within ±range of spot.
+        step = self.strike_step
+        lo = math.ceil(spot * (1.0 - self.strike_pct_range) / step) * step
+        hi = math.floor(spot * (1.0 + self.strike_pct_range) / step) * step
+        k = np.arange(lo, hi + step, step, dtype="float64")
+        k = k[k > 0]
+
+        log_m = np.log(k / spot)
+        iv = np.clip(
             self.base_iv
             + self.skew * (-log_m)
-            + self.term_slope * (math.sqrt(max(t, 0.0)) - math.sqrt(30 / 365))
+            + self.term_slope * (math.sqrt(t) - math.sqrt(30 / 365)),
+            0.05,
+            2.0,
         )
-        return float(min(max(iv, 0.05), 2.0))
+        r, q = self.r, self.q
+        sqrt_t = math.sqrt(t)
+        vol_sqrt_t = iv * sqrt_t
+        d1 = (np.log(spot / k) + (r - q + 0.5 * iv**2) * t) / vol_sqrt_t
+        d2 = d1 - vol_sqrt_t
+        disc_q, disc_r = math.exp(-q * t), math.exp(-r * t)
+        pdf_d1 = norm.pdf(d1)
+
+        gamma = disc_q * pdf_d1 / (spot * vol_sqrt_t)
+        vega = spot * disc_q * pdf_d1 * sqrt_t / 100.0
+        frames = []
+        for right, n_d1, n_d2 in (
+            (OptionRight.CALL, norm.cdf(d1), norm.cdf(d2)),
+            (OptionRight.PUT, norm.cdf(-d1), norm.cdf(-d2)),
+        ):
+            if right is OptionRight.CALL:
+                price = disc_q * spot * n_d1 - disc_r * k * n_d2
+                delta = disc_q * n_d1
+                theta = (
+                    -(spot * disc_q * pdf_d1 * iv) / (2 * sqrt_t)
+                    - r * k * disc_r * norm.cdf(d2)
+                    + q * spot * disc_q * norm.cdf(d1)
+                ) / 365.0
+                rho = k * t * disc_r * norm.cdf(d2) / 100.0
+            else:
+                price = disc_r * k * n_d2 - disc_q * spot * n_d1
+                delta = -disc_q * n_d1
+                theta = (
+                    -(spot * disc_q * pdf_d1 * iv) / (2 * sqrt_t)
+                    + r * k * disc_r * norm.cdf(-d2)
+                    - q * spot * disc_q * norm.cdf(-d1)
+                ) / 365.0
+                rho = -k * t * disc_r * norm.cdf(-d2) / 100.0
+            mark = np.maximum(price, 0.0)
+            half = np.maximum(0.02, np.round(mark * 0.02, 2))
+            liquidity = np.maximum(1, (2000 * np.exp(-12 * np.abs(k - spot) / spot)).astype(int))
+            frames.append(
+                pd.DataFrame(
+                    {
+                        "expiry": expiry,
+                        "strike": k,
+                        "type": right.value,
+                        "bid": np.round(np.maximum(mark - half, 0.0), 2),
+                        "ask": np.round(mark + half, 2),
+                        "last": np.round(mark, 2),
+                        "mark": np.round(mark, 2),
+                        "volume": liquidity.astype("float64"),
+                        "oi": (liquidity * 5).astype("float64"),
+                        "iv": np.round(iv, 4),
+                        "delta": delta,
+                        "gamma": gamma,
+                        "theta": theta,
+                        "vega": vega,
+                        "rho": rho,
+                        "underlying_price": round(spot, 4),
+                    }
+                )
+            )
+        return pd.concat(frames, ignore_index=True)
 
     def get_chain(self, symbol: str, asof: date) -> pd.DataFrame:
         """Return a synthetic Black-Scholes option chain for ``symbol`` at ``asof``."""
         spot = self._price_on(symbol, asof)
-        step = max(1.0, round(spot * self.strike_pct_range / self.n_strikes))
-        atm = round(spot / step) * step
-        strikes = [atm + step * i for i in range(-self.n_strikes, self.n_strikes + 1)]
-        strikes = [s for s in strikes if s > 0]
-
-        rows: list[dict[str, object]] = []
-        for dte in self.dtes:
-            expiry = asof + timedelta(days=dte)
-            t = dte / 365.0
-            for strike in strikes:
-                iv = self._iv(spot, strike, t)
-                for right in (OptionRight.CALL, OptionRight.PUT):
-                    g = greeks(spot, strike, t, self.r, iv, as_option_type(right.value), self.q)
-                    mark = max(g.price, 0.0)
-                    half = max(0.02, round(mark * 0.02, 2))
-                    moneyness = abs(strike - spot) / spot
-                    liquidity = max(1, int(2000 * math.exp(-12 * moneyness)))
-                    rows.append(
-                        {
-                            "expiry": expiry,
-                            "strike": float(strike),
-                            "type": right.value,
-                            "bid": round(max(mark - half, 0.0), 2),
-                            "ask": round(mark + half, 2),
-                            "last": round(mark, 2),
-                            "mark": round(mark, 2),
-                            "volume": float(liquidity),
-                            "oi": float(liquidity * 5),
-                            "iv": round(iv, 4),
-                            "delta": g.delta,
-                            "gamma": g.gamma,
-                            "theta": g.theta,
-                            "vega": g.vega,
-                            "rho": g.rho,
-                            "underlying_price": round(spot, 4),
-                        }
-                    )
-        return pd.DataFrame(rows)
+        frames = [
+            self._expiry_frame(spot, expiry, (expiry - asof).days / 365.0)
+            for expiry in self._expiries(asof)
+        ]
+        return pd.concat(frames, ignore_index=True)
 
     # -- convenience for strategies --------------------------------------
     @staticmethod
