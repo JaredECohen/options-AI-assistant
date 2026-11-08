@@ -30,10 +30,10 @@ Leg = Union[OptionLeg, StockLeg]
 
 class ChatRequest(BaseModel):
     message: str = Field(default="", max_length=4000)
-    ticker: str | None = None
-    view: str | None = None
-    strategy: str | None = None
-    legs: list[Leg] | None = None
+    ticker: str | None = Field(default=None, max_length=10)
+    view: str | None = Field(default=None, max_length=40)
+    strategy: str | None = Field(default=None, max_length=60)
+    legs: list[Leg] | None = Field(default=None, max_length=8)
     mode: Literal["structured", "freeform"] | None = None
     # Server-issued id of a conversation the caller owns. Omit to start one.
     conversation_id: str | None = Field(default=None, max_length=36)

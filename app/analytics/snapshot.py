@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import math
+import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -35,6 +37,8 @@ from app.db.session import Database
 MAX_EXPIRIES = 3
 MIN_DTE, MAX_DTE = 7, 180
 CACHE_SECONDS = 60
+MAX_CACHED = 256  # bounded: an LRU over (provider, ticker)
+TICKER_RE = re.compile(r"^[A-Z.]{1,10}$")
 IV_METHOD = "atm_cm30_total_variance"
 
 
@@ -123,11 +127,13 @@ class SnapshotService:
         self.cfg = cfg
         self.db = db
         self.clock = clock
-        self._cache: dict[tuple[str, str], tuple[float, Snapshot]] = {}
+        self._cache: OrderedDict[tuple[str, str], tuple[float, Snapshot]] = OrderedDict()
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def get(self, ticker: str, now: dt.datetime | None = None) -> Snapshot:
         ticker = ticker.upper()
+        if not TICKER_RE.match(ticker):
+            raise ValueError("invalid ticker")
         key = (self.provider.name, ticker)
         hit = self._cache.get(key)
         if hit and self.clock() - hit[0] < CACHE_SECONDS:
@@ -139,6 +145,10 @@ class SnapshotService:
                 return hit[1]
             snap = await self._build(ticker, now or dt.datetime.now(dt.UTC))
             self._cache[key] = (self.clock(), snap)
+            self._cache.move_to_end(key)
+            while len(self._cache) > MAX_CACHED:
+                old_key, _ = self._cache.popitem(last=False)
+                self._locks.pop(old_key[1], None)
             return snap
 
     async def _build(self, ticker: str, now: dt.datetime) -> Snapshot:

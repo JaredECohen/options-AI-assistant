@@ -33,6 +33,7 @@ from app.providers.options.factory import build_options_provider
 BASE_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
+MAX_BODY_BYTES = 64 * 1024
 log = logging.getLogger("app")
 
 
@@ -116,6 +117,17 @@ def create_app(
     )
 
     @app.middleware("http")
+    async def body_limit(request: Request, call_next):
+        if request.method in ("POST", "PUT", "PATCH"):
+            length = request.headers.get("content-length")
+            if length is None:
+                if request.headers.get("transfer-encoding"):
+                    return _error(411, "length_required", "Content-Length is required")
+            elif not length.isdigit() or int(length) > MAX_BODY_BYTES:
+                return _error(413, "body_too_large", f"request bodies are limited to {MAX_BODY_BYTES} bytes")
+        return await call_next(request)
+
+    @app.middleware("http")
     async def request_context(request: Request, call_next):
         incoming = request.headers.get("x-request-id", "")
         rid = incoming if _REQUEST_ID.match(incoming) else uuid.uuid4().hex
@@ -177,6 +189,10 @@ def _install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(repo.NotFound)
     async def not_found(_request: Request, exc: repo.NotFound):
         return _error(404, "not_found", str(exc))
+
+    @app.exception_handler(repo.BadCursor)
+    async def bad_cursor(_request: Request, exc: repo.BadCursor):
+        return _error(422, "invalid_cursor", str(exc))
 
     @app.exception_handler(repo.Conflict)
     async def conflict(_request: Request, exc: repo.Conflict):

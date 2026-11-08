@@ -149,7 +149,7 @@ def test_env_var_docs_cover_every_variable_read():
     import re
     src = "\n".join(p.read_text() for p in pathlib.Path("app").rglob("*.py"))
     read = set(re.findall(r'os\.getenv\("([A-Z0-9_]+)"', src)) | set(re.findall(r'_(?:bool|int|float|list)\("([A-Z0-9_]+)"', src))
-    read -= {"RENDER_GIT_COMMIT", "OC_ALLOW_NETWORK"}
+    read -= {"RENDER_GIT_COMMIT", "RENDER", "OC_ALLOW_NETWORK"}  # platform-provided / test-only
     missing = read - set(ENV_VARS)
     assert not missing, f"undocumented env vars: {sorted(missing)}"
     doc = pathlib.Path("docs/ENV_VARS.md").read_text()
@@ -164,3 +164,28 @@ def test_health_and_ready(tmp_path):
     cfg = c.get("/api/public/config").json()
     assert cfg["market_data"]["data_status"] == "synthetic" and cfg["llm"]["labelled_demo"] is True
     assert "anthropic_api_key" not in str(cfg).lower()
+
+
+def test_render_requires_explicit_prod_env(monkeypatch):
+    from app.config import load_settings
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.delenv("APP_ENV", raising=False)
+    with pytest.raises(ConfigError, match="APP_ENV must be set"):
+        load_settings()
+    monkeypatch.setenv("APP_ENV", "development")
+    with pytest.raises(ConfigError):
+        load_settings()
+
+
+def test_auth_off_dev_refuses_real_database():
+    s = Settings(app_env="development", auth_enabled=False, database_url="postgresql://u@h/db")
+    assert any("SQLite" in p for p in validate_for_startup(s))
+
+
+async def test_tradier_rejects_multi_symbol_and_non_finite():
+    from app.providers.options.base import QuoteUnavailable
+    from app.providers.options.tradier import TradierProvider, _num
+    p = TradierProvider(api_token="t", transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    with pytest.raises(QuoteUnavailable):
+        await p.get_underlying_price("AAPL,MSFT")
+    assert _num("nan") is None and _num("inf") is None and _num("1.5") == 1.5

@@ -167,9 +167,19 @@ def test_jobs_are_owned(tmp_path):
 def test_delete_my_data(tmp_path):
     c, keys = client(tmp_path)
     _chat(c, keys, "user_a")
+    from app.db import repo
+    from app.jobs import queue
+    queue.enqueue(c.app.state.db, "backtest", "kdel", {"spec": 1}, user_id=repo.ensure_user(c.app.state.db, "user_a"))
     assert c.delete("/api/me/data", headers=auth(keys)).status_code == 200
-    # the account is tombstoned: further requests with the same identity are refused
-    assert c.get("/api/conversations", headers=auth(keys)).status_code == 403
+    # data gone (including jobs), but the person is not locked out
+    assert c.get("/api/conversations", headers=auth(keys)).json()["items"] == []
+    export = c.get("/api/me/export", headers=auth(keys)).json()
+    assert export["conversations"] == [] and export["positions"] == []
+    from sqlalchemy import func, select
+
+    from app.db.models import Job
+    with c.app.state.db.session() as s:
+        assert s.execute(select(func.count()).select_from(Job)).scalar_one() == 0
 
 
 async def test_marketmosaic_entitlements_contract_and_fail_closed():
@@ -230,3 +240,17 @@ async def test_marketmosaic_suspended_is_an_answer_not_an_outage():
     source = MarketMosaicEntitlementSource("https://mm.internal", "svc", transport=httpx.MockTransport(other_403))
     with pytest.raises(AuthUnavailable):
         await source.fetch("user_a", "tok")
+
+
+def test_input_limits_and_bad_cursor(tmp_path):
+    c, keys = client(tmp_path)
+    big = {"message": "x" * 100, "strategy": "s" * 500}
+    assert c.post("/api/chat", json=big, headers=auth(keys)).status_code == 422
+    huge = c.post("/api/chat", content=b"{" + b" " * (70 * 1024) + b"}",
+                  headers={**auth(keys), "Content-Type": "application/json"})
+    assert huge.status_code == 413
+    r = c.get("/api/conversations?before=not-a-date|x", headers=auth(keys))
+    assert r.status_code == 422 and r.json()["error"] == "invalid_cursor"
+    for path in ("/api/analytics/AAPL,MSFT", "/api/analytics/AAPL,MSFT/surface"):
+        assert c.get(path, headers=auth(keys)).status_code == 422
+    assert c.post("/api/compare", json={"tickers": ["SPY", "QQQ,IWM"]}, headers=auth(keys)).status_code == 422

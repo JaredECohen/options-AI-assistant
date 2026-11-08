@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,10 @@ class NotFound(LookupError):
 
 
 class Conflict(ValueError):
+    pass
+
+
+class BadCursor(ValueError):
     pass
 
 
@@ -61,13 +65,17 @@ def ensure_user(db: Database, external_id: str) -> int:
 
 
 def delete_user_data(db: Database, user_id: int) -> None:
-    """Hard-delete everything OptionsCoach holds for a user (cascades)."""
+    """Hard-delete everything OptionsCoach holds for a user. The identity row
+    stays (keyed only by the Clerk sub) so the person can keep using the app;
+    account deletion itself is MarketMosaic's (it owns the identity)."""
+    from app.db.models import Job
+
     with db.session() as s:
         s.execute(delete(Conversation).where(Conversation.user_id == user_id))
         s.execute(delete(Position).where(Position.user_id == user_id))
         s.execute(delete(SavedScreen).where(SavedScreen.user_id == user_id))
+        s.execute(delete(Job).where(Job.user_id == user_id))
         s.execute(LLMUsageEvent.__table__.update().where(LLMUsageEvent.user_id == user_id).values(user_id=None))
-        s.execute(User.__table__.update().where(User.id == user_id).values(deleted_at=utcnow()))
 
 
 # --------------------------------------------------------------------------- conversations
@@ -100,7 +108,10 @@ def list_conversations(db: Database, user_id: int, limit: int = 20, before: str 
         q = select(Conversation).where(Conversation.user_id == user_id)
         if before:
             ts_raw, _, cid = before.partition("|")
-            ts = dt.datetime.fromisoformat(ts_raw)
+            try:
+                ts = dt.datetime.fromisoformat(ts_raw)
+            except ValueError as exc:
+                raise BadCursor("invalid cursor") from exc
             q = q.where((Conversation.updated_at < ts) | ((Conversation.updated_at == ts) & (Conversation.id < cid)))
         rows = s.execute(q.order_by(Conversation.updated_at.desc(), Conversation.id.desc()).limit(limit + 1)).scalars().all()
     items = [{"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat()} for c in rows[:limit]]
@@ -324,3 +335,57 @@ def chat_turns_in_window(db: Database, user_id: int, seconds: int = 60) -> int:
                 .where(Conversation.user_id == user_id, Message.role == "user", Message.created_at >= since)
             ).scalar_one()
         )
+
+
+class AdmissionDenied(Exception):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+TURN_OUTCOME = "turn"
+_GLOBAL_LOCK_KEY = 0x0C0A  # arbitrary, stable
+
+
+def reserve_turn(db: Database, user_id: int | None, *, estimate_tokens: int, rate_per_min: int,
+                 user_budget: int, global_budget: int, correlation_id: str = "") -> int:
+    """Atomically admit one model turn and reserve its estimated tokens.
+
+    The checks and the reservation row are written in ONE transaction, and on
+    Postgres under advisory locks (per user, then global), so concurrent
+    requests cannot all pass a check before any of them is counted. The
+    reservation row (outcome "turn") is what the per-minute limit counts; its
+    estimate counts toward budgets until finish_turn() zeroes it, after which
+    the per-call usage rows carry the real tokens."""
+    today = utcnow().date()
+    since = utcnow() - dt.timedelta(seconds=60)
+    with db.session() as s:
+        if s.bind.dialect.name == "postgresql":
+            if user_id is not None:
+                s.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": int(user_id)})
+            s.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _GLOBAL_LOCK_KEY})
+        tokens = LLMUsageEvent.input_tokens + LLMUsageEvent.output_tokens
+        if user_id is not None:
+            recent = s.execute(select(func.count()).select_from(LLMUsageEvent).where(
+                LLMUsageEvent.user_id == user_id, LLMUsageEvent.outcome == TURN_OUTCOME,
+                LLMUsageEvent.created_at >= since)).scalar_one()
+            if recent >= rate_per_min:
+                raise AdmissionDenied("too_many_requests")
+            used = s.execute(select(func.coalesce(func.sum(tokens), 0)).where(
+                LLMUsageEvent.user_id == user_id, LLMUsageEvent.day == today)).scalar_one()
+            if used + estimate_tokens > user_budget:
+                raise AdmissionDenied("budget_user")
+        used_all = s.execute(select(func.coalesce(func.sum(tokens), 0)).where(LLMUsageEvent.day == today)).scalar_one()
+        if used_all + estimate_tokens > global_budget:
+            raise AdmissionDenied("budget_global")
+        row = LLMUsageEvent(user_id=user_id, day=today, correlation_id=correlation_id, provider="anthropic",
+                            outcome=TURN_OUTCOME, output_tokens=estimate_tokens)
+        s.add(row)
+        s.flush()
+        return int(row.id)
+
+
+def finish_turn(db: Database, reservation_id: int) -> None:
+    """Release the estimate; the per-call rows already hold the actual usage."""
+    with db.session() as s:
+        s.execute(update(LLMUsageEvent).where(LLMUsageEvent.id == reservation_id).values(output_tokens=0))

@@ -19,7 +19,8 @@ def _client(tmp_path, script, **overrides):
 
 def _usage(c):
     with c.app.state.db.session() as s:
-        return s.execute(select(LLMUsageEvent).order_by(LLMUsageEvent.id)).scalars().all()
+        return s.execute(select(LLMUsageEvent).where(LLMUsageEvent.outcome != "turn")  # per-call rows only
+                         .order_by(LLMUsageEvent.id)).scalars().all()
 
 
 def test_success_is_attributed_and_accounted(tmp_path):
@@ -85,12 +86,13 @@ def test_missing_key_is_not_configured_not_heuristic(tmp_path):
 
 def test_user_and_global_budgets(tmp_path):
     script = ScriptedAnthropic([message("Summary: a", input_tokens=900, output_tokens=200)])
-    c, keys = _client(tmp_path, script, llm_user_daily_token_budget=1000)
+    small = {"llm_max_output_tokens": 50, "llm_max_tool_rounds": 0}  # reservation estimate = 50 tokens
+    c, keys = _client(tmp_path, script, llm_user_daily_token_budget=1000, **small)
     assert c.post("/api/chat", json={"message": OFF_SCRIPT}, headers=auth(keys)).status_code == 200
     r = c.post("/api/chat", json={"message": OFF_SCRIPT}, headers=auth(keys))
     assert r.status_code == 429 and r.json()["code"] == "budget_user"
     script2 = ScriptedAnthropic([message("Summary: b", input_tokens=900, output_tokens=200)])
-    c2, keys2 = _client(tmp_path, script2, llm_global_daily_token_budget=1000)
+    c2, keys2 = _client(tmp_path, script2, llm_global_daily_token_budget=1000, **small)
     assert c2.post("/api/chat", json={"message": OFF_SCRIPT}, headers=auth(keys2, "user_a")).status_code == 200
     r = c2.post("/api/chat", json={"message": OFF_SCRIPT}, headers=auth(keys2, "user_b"))
     assert r.status_code == 429 and r.json()["code"] == "budget_global"
@@ -167,3 +169,24 @@ def test_numbers_validator_unit():
     assert numbers_validator("Max loss: $1,200", tr) is not None
     assert numbers_validator("This uses real-time quotes.", tr) is not None
     assert numbers_validator("Maximum profit of $4.00 per share", tr) is None  # per-share form of 400
+
+
+def test_reservation_blocks_concurrent_turns_before_any_usage_is_recorded(tmp_path):
+    """Admission is atomic: reservations count immediately, so N parallel turns
+    cannot all pass the per-minute limit or the budget before usage lands."""
+    from app.db import repo
+    c, _ = _client(tmp_path, ScriptedAnthropic([]), rate_limit_per_min=2)
+    db = c.app.state.db
+    uid = repo.ensure_user(db, "user_a")
+    kw = dict(estimate_tokens=10, rate_per_min=2, user_budget=1_000_000, global_budget=1_000_000)
+    repo.reserve_turn(db, uid, **kw)
+    repo.reserve_turn(db, uid, **kw)
+    import pytest as _pt
+    with _pt.raises(repo.AdmissionDenied):
+        repo.reserve_turn(db, uid, **kw)
+    with _pt.raises(repo.AdmissionDenied) as e:
+        repo.reserve_turn(db, uid, **{**kw, "rate_per_min": 99, "user_budget": 25})  # 10+10 reserved + 10 > 25
+    assert e.value.code == "budget_user"
+    rid = repo.reserve_turn(db, None, **{**kw, "rate_per_min": 99})
+    repo.finish_turn(db, rid)
+    assert repo.tokens_today(db, None) == 20  # finished reservation no longer counts

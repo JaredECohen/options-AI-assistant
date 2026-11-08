@@ -160,7 +160,7 @@ class LLMGateway:
                 attribution.fallback_reason = "circuit_open"
                 return await self._heuristic(user_text, ensure_structured_response, attribution, "heuristic_fallback")
             raise LLMUnavailable("circuit_open")
-        self._admit(turn)
+        reservation = await asyncio.to_thread(self._admit, turn)
 
         try:
             text = await self._anthropic_turn(user_text, turn, attribution)
@@ -171,6 +171,9 @@ class LLMGateway:
                     attribution.fallback_reason = exc.code
                     return await self._heuristic(user_text, ensure_structured_response, attribution, "heuristic_fallback")
             raise
+        finally:
+            if reservation is not None:
+                await asyncio.to_thread(repo.finish_turn, self.db, reservation)
         self.breaker.success()
         return ensure_sections(text) if ensure_structured_response else text
 
@@ -184,17 +187,19 @@ class LLMGateway:
         text = await self.heuristic.generate(system=SYSTEM_PROMPT, user=user_text, max_output_tokens=0, temperature=0.0)
         return ensure_sections(text) if structured else text
 
-    def _admit(self, turn: TurnContext) -> None:
+    def _admit(self, turn: TurnContext) -> int | None:
+        """Reserve this turn atomically (see repo.reserve_turn). The estimate is
+        the worst case for one call times the allowed tool rounds."""
         if self.db is None:
-            return
+            return None
         s = self.settings
-        if turn.user_id is not None:
-            if repo.chat_turns_in_window(self.db, turn.user_id, 60) >= s.rate_limit_per_min:
-                raise LLMUnavailable("too_many_requests")
-            if repo.tokens_today(self.db, turn.user_id) >= s.llm_user_daily_token_budget:
-                raise LLMUnavailable("budget_user")
-        if repo.tokens_today(self.db, None) >= s.llm_global_daily_token_budget:
-            raise LLMUnavailable("budget_global")
+        estimate = s.llm_max_output_tokens * (s.llm_max_tool_rounds + 1)
+        try:
+            return repo.reserve_turn(self.db, turn.user_id, estimate_tokens=estimate, rate_per_min=s.rate_limit_per_min,
+                                     user_budget=s.llm_user_daily_token_budget, global_budget=s.llm_global_daily_token_budget,
+                                     correlation_id=turn.correlation_id)
+        except repo.AdmissionDenied as exc:
+            raise LLMUnavailable(exc.code) from exc
 
     @property
     def client(self) -> anthropic.AsyncAnthropic:

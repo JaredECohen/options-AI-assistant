@@ -277,12 +277,13 @@ def compute_payoff(
     max_profit, max_loss = payoff_bounds(legs)
 
     def legacy(bound: Bound, loss: bool) -> Any:
+        # Signed, never clamped: a position whose best outcome is a loss reports a
+        # NEGATIVE max profit (and one that cannot lose reports a negative max loss)
+        # instead of a misleading 0.
         if bound.unbounded:
             return "unlimited"
         assert bound.value is not None
-        if loss:
-            return _money(-bound.value) if bound.value < 0 else 0.0
-        return _money(bound.value) if bound.value > 0 else 0.0
+        return _money(-bound.value) if loss else _money(bound.value)
 
     prices = chart_grid(underlying_price, legs)
     curve = [{"price": round(p, 2), "payoff": _money(position_payoff(legs, p))} for p in prices]

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from app.auth.entitlements import EntitlementError, Entitlements
 from app.auth.tokens import AuthUnavailable, TokenInvalid, verify_token
@@ -46,14 +47,16 @@ async def authenticate(request: Request) -> Principal:
     if not settings.auth_enabled:
         # Only reachable in development/test: validate_for_startup refuses
         # AUTH_ENABLED=false in staging/production.
-        user_id = repo.ensure_user(state.db, DEV_SUB)
+        user_id = await run_in_threadpool(repo.ensure_user, state.db, DEV_SUB)
         ent = await state.entitlements.get(DEV_SUB, "")
         return Principal(user_id, DEV_SUB, ent, "")
     token = _bearer(request)
     if token is None:
         raise _error(401, "auth_required", "sign in required")
     try:
-        verified = verify_token(
+        # verify_token may fetch JWKS synchronously; keep it off the event loop.
+        verified = await run_in_threadpool(
+            verify_token,
             token,
             jwks=state.jwks,
             issuer=settings.clerk_issuer,
@@ -71,7 +74,7 @@ async def authenticate(request: Request) -> Principal:
     except EntitlementError as exc:
         raise _error(401, "auth_invalid", str(exc)) from exc
     try:
-        user_id = repo.ensure_user(state.db, verified.sub)
+        user_id = await run_in_threadpool(repo.ensure_user, state.db, verified.sub)
     except repo.NotFound as exc:
         raise _error(403, "account_suspended", "account deleted") from exc
     return Principal(user_id, verified.sub, ent, token)

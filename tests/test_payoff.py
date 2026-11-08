@@ -125,6 +125,13 @@ def test_breakeven_exactly_at_strike_and_flat_zero_segments():
     assert mp.unbounded and ml.value == 0.0
 
 
+def test_guaranteed_loss_is_reported_signed_not_zero():
+    # buy 100 call @10, sell 90 call @1: best case is -9/share at S <= 90
+    c = run([opt("call", "buy", 100, 10), opt("call", "sell", 90, 1)])
+    assert c["max_profit"] == -900.0 and c["bounds"]["max_profit"]["value"] == -900.0
+    assert c["max_loss"] == 1900.0
+
+
 def test_mixed_expirations_rejected():
     with pytest.raises(PayoffInputError) as e:
         run([opt("call", "buy", 100, 3), opt("call", "sell", 110, 1, exp="2027-01-15")])

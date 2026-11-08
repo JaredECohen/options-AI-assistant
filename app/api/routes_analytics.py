@@ -6,10 +6,10 @@ import datetime as dt
 import hashlib
 import json
 import math
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
+from pydantic import BaseModel, Field, StringConstraints
 
 from app.analytics import screener
 from app.analytics.chain import enrich_chain, forward_price, otm_iv_points, time_to_expiry
@@ -24,6 +24,7 @@ from app.jobs import queue
 
 router = APIRouter()
 TICKER_PATH = r"^[A-Za-z.]{1,10}$"
+TickerPath = Path(..., pattern=TICKER_PATH)
 MAX_LIVE_UNIVERSE = 10
 
 
@@ -32,10 +33,8 @@ def _err(status: int, code: str, detail: str, **extra) -> HTTPException:
 
 
 @router.get("/api/analytics/{ticker}")
-async def ticker_analytics(request: Request, ticker: str, expiration: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+async def ticker_analytics(request: Request, ticker: str = TickerPath, expiration: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
                            principal: Principal = Depends(require("analytics"))):
-    if not ticker.isascii() or len(ticker) > 10:
-        raise _err(422, "bad_ticker", "invalid ticker")
     state = request.app.state
     snap = await state.snapshots.get(ticker)
     body = {"summary": snap.as_json(), "conventions": state.analytics_cfg.conventions(), **_provenance(state.options_provider)}
@@ -48,7 +47,7 @@ async def ticker_analytics(request: Request, ticker: str, expiration: str | None
 
 
 @router.get("/api/analytics/{ticker}/surface")
-async def surface(request: Request, ticker: str, max_expiries: int = Query(4, ge=1, le=6),
+async def surface(request: Request, ticker: str = TickerPath, max_expiries: int = Query(4, ge=1, le=6),
                   principal: Principal = Depends(require("analytics"))):
     state = request.app.state
     p, cfg = state.options_provider, state.analytics_cfg
@@ -67,7 +66,7 @@ async def surface(request: Request, ticker: str, max_expiries: int = Query(4, ge
 
 
 class CompareIn(BaseModel):
-    tickers: list[str] = Field(min_length=2, max_length=MAX_LIVE_UNIVERSE)
+    tickers: list[Annotated[str, StringConstraints(pattern=TICKER_PATH)]] = Field(min_length=2, max_length=MAX_LIVE_UNIVERSE)
     target_dte: int = Field(30, ge=7, le=180)
     sort_by: Literal["iv", "hv20", "iv_hv_ratio", "iv_rank", "skew_25d", "ticker"] = "iv"
 
@@ -189,7 +188,7 @@ def cancel_job(job_id: str, request: Request, principal: Principal = Depends(req
 
 
 @router.get("/api/research/{ticker}/memos")
-async def research_versions(ticker: str, request: Request, principal: Principal = Depends(require("research"))):
+async def research_versions(request: Request, ticker: str = TickerPath, principal: Principal = Depends(require("research"))):
     client = request.app.state.research
     if client is None:
         raise _err(503, "research_unavailable", "MarketMosaic research integration is not enabled.")
@@ -200,7 +199,7 @@ async def research_versions(ticker: str, request: Request, principal: Principal 
 
 
 @router.get("/api/research/{ticker}/memos/{version}")
-async def research_memo(ticker: str, version: int, request: Request, principal: Principal = Depends(require("research"))):
+async def research_memo(request: Request, version: int, ticker: str = TickerPath, principal: Principal = Depends(require("research"))):
     client = request.app.state.research
     if client is None:
         raise _err(503, "research_unavailable", "MarketMosaic research integration is not enabled.")

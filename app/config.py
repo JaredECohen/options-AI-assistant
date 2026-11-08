@@ -176,7 +176,12 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    app_env = os.getenv("APP_ENV", "development").strip().lower()
+    raw_env = os.getenv("APP_ENV", "").strip().lower()
+    if os.getenv("RENDER") and raw_env not in ("staging", "production"):
+        # Render sets RENDER=true. A missing or development APP_ENV there would
+        # boot with auth off and shared fixture entitlements: refuse instead.
+        raise ConfigError("On Render, APP_ENV must be set explicitly to staging or production.")
+    app_env = raw_env or "development"
     if app_env not in ("development", "test", "staging", "production"):
         raise ConfigError(f"APP_ENV must be development, test, staging or production (got {app_env!r}).")
     is_dev = app_env in ("development", "test")
@@ -253,6 +258,10 @@ def validate_for_startup(s: Settings) -> list[str]:
     if s.llm_provider == "anthropic" and not s.anthropic_api_key and s.is_prod_like:
         problems.append("LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY.")
     if not s.is_prod_like:
+        if not s.auth_enabled and s.database_url and not s.database_url.startswith("sqlite"):
+            # Auth-off development against a real database is how a misconfigured
+            # deploy would look; local Postgres testing should enable auth.
+            problems.append("AUTH_ENABLED=false is only allowed with a SQLite DATABASE_URL (local development).")
         return problems
     # staging / production only
     if not s.auth_enabled:

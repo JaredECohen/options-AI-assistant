@@ -13,7 +13,9 @@ labelled real-time by accident.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import os
+import re
 from typing import Any
 
 import httpx
@@ -23,6 +25,7 @@ from .base import Greeks, OptionQuote, ProviderUnavailable, QuoteUnavailable
 PRODUCTION_URL = "https://api.tradier.com/v1"
 SANDBOX_URL = "https://sandbox.tradier.com/v1"
 _ALLOWED_STATUS = {"live", "delayed", "eod"}
+_SYMBOL_RE = re.compile(r"^[A-Z.]{1,10}$")
 
 
 def _ms_to_iso(value: Any) -> str | None:
@@ -42,7 +45,7 @@ def _num(value: Any) -> float | None:
         out = float(value)
     except (TypeError, ValueError):
         return None
-    return out
+    return out if math.isfinite(out) else None  # "nan"/"inf" are not prices
 
 
 def _int(value: Any) -> int | None:
@@ -71,6 +74,13 @@ class TradierProvider:
         self._timeout = timeout_seconds
         self._transport = transport
 
+    @staticmethod
+    def _symbol(ticker: str) -> str:
+        t = ticker.upper()
+        if not _SYMBOL_RE.match(t):  # e.g. "AAPL,MSFT" would silently quote AAPL
+            raise QuoteUnavailable(f"invalid symbol {ticker!r}")
+        return t
+
     def _headers(self) -> dict:
         if not self.api_token:
             raise ProviderUnavailable("Tradier is not configured (TRADIER_API_TOKEN is unset).")
@@ -97,7 +107,7 @@ class TradierProvider:
             raise ProviderUnavailable("Tradier returned a non-JSON body.") from exc
 
     async def get_underlying_price(self, ticker: str) -> float:
-        data = await self._get_json("/markets/quotes", {"symbols": ticker.upper()})
+        data = await self._get_json("/markets/quotes", {"symbols": self._symbol(ticker)})
         quote = (data.get("quotes") or {}).get("quote") or {}
         if isinstance(quote, list):
             quote = quote[0] if quote else {}
@@ -109,7 +119,7 @@ class TradierProvider:
         raise QuoteUnavailable(f"No usable quote for {ticker.upper()}.")
 
     async def list_expirations(self, ticker: str) -> list[str]:
-        data = await self._get_json("/markets/options/expirations", {"symbol": ticker.upper()})
+        data = await self._get_json("/markets/options/expirations", {"symbol": self._symbol(ticker)})
         expirations = (data.get("expirations") or {}).get("date")
         if isinstance(expirations, list):
             return [str(e) for e in expirations]
@@ -159,7 +169,7 @@ class TradierProvider:
     async def get_chain(self, ticker: str, expiration: str) -> list[OptionQuote]:
         data = await self._get_json(
             "/markets/options/chains",
-            {"symbol": ticker.upper(), "expiration": expiration, "greeks": "true"},
+            {"symbol": self._symbol(ticker), "expiration": expiration, "greeks": "true"},
         )
         options = (data.get("options") or {}).get("option") or []
         if isinstance(options, dict):
@@ -179,7 +189,7 @@ class TradierProvider:
 
 
     async def get_daily_bars(self, ticker: str, start: dt.date, end: dt.date) -> list[tuple[dt.date, float]]:
-        data = await self._get_json("/markets/history", {"symbol": ticker.upper(), "interval": "daily",
+        data = await self._get_json("/markets/history", {"symbol": self._symbol(ticker), "interval": "daily",
                                                           "start": start.isoformat(), "end": end.isoformat()})
         days = (data.get("history") or {}).get("day") or []
         if isinstance(days, dict):
