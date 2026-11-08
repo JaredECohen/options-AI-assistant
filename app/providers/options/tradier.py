@@ -178,5 +178,26 @@ class TradierProvider:
         raise QuoteUnavailable(f"{ticker.upper()} {expiration} {strike:g} {option_type} is not in the chain.")
 
 
+    async def get_daily_bars(self, ticker: str, start: dt.date, end: dt.date) -> list[tuple[dt.date, float]]:
+        data = await self._get_json("/markets/history", {"symbol": ticker.upper(), "interval": "daily",
+                                                          "start": start.isoformat(), "end": end.isoformat()})
+        days = (data.get("history") or {}).get("day") or []
+        if isinstance(days, dict):
+            days = [days]
+        out = []
+        for d in days:
+            c = _num(d.get("close"))
+            try:
+                day = dt.date.fromisoformat(str(d.get("date")))
+            except ValueError:
+                continue
+            if c is not None and c > 0:
+                out.append((day, c))
+        return sorted(out)
+
+    async def get_daily_closes(self, ticker: str, start: dt.date, end: dt.date) -> list[float]:
+        return [c for _d, c in await self.get_daily_bars(ticker, start, end)]
+
+
 def build_tradier_provider() -> TradierProvider:
     return TradierProvider()

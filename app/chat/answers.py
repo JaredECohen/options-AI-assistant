@@ -1,15 +1,53 @@
 """Deterministic answers to recognised questions, resolved before any LLM call."""
 from __future__ import annotations
 
-from app.core.safety import ensure_sections
-from app.core.safety import illegal_refusal_template
-from app.core.safety import is_illegal_request
-from app.core.safety import is_trade_recommendation_request
-from app.core.strategies import get_strategy
-from app.core.strategies import normalize_strategy_name
-from app.chat.intents import detect_basic_option_question, detect_view_from_text, extract_greek_terms, extract_strategies, is_expiration_selection_question, is_long_short_comparison_question, is_payoff_mechanics_question, is_strike_selection_question, is_view_menu_request
-from app.chat.render_freeform import format_assignment_freeform, format_breakeven_freeform, format_convexity_freeform, format_extrinsic_value_freeform, format_greek_comparison_freeform, format_greek_freeform, format_intrinsic_value_freeform, format_key_terms_freeform, format_long_short_comparison_freeform, format_moneyness_freeform, format_payoff_mechanics_freeform, illegal_refusal_freeform, income_view_suggestions_freeform, to_freeform, use_case_phrase, view_trade_suggestions_freeform
-from app.chat.render_structured import format_basic_option_structured, format_expiration_selection_structured, format_greek_comparison_structured, format_greek_structured, format_long_short_comparison_structured, format_payoff_mechanics_structured, format_strike_selection_structured, income_view_suggestions_structured, view_trade_suggestions_structured
+from app.chat.intents import (
+    detect_basic_option_question,
+    detect_view_from_text,
+    extract_greek_terms,
+    extract_strategies,
+    is_expiration_selection_question,
+    is_long_short_comparison_question,
+    is_payoff_mechanics_question,
+    is_strike_selection_question,
+    is_view_menu_request,
+)
+from app.chat.render_freeform import (
+    format_assignment_freeform,
+    format_breakeven_freeform,
+    format_convexity_freeform,
+    format_extrinsic_value_freeform,
+    format_greek_comparison_freeform,
+    format_greek_freeform,
+    format_intrinsic_value_freeform,
+    format_key_terms_freeform,
+    format_long_short_comparison_freeform,
+    format_moneyness_freeform,
+    format_payoff_mechanics_freeform,
+    illegal_refusal_freeform,
+    income_view_suggestions_freeform,
+    to_freeform,
+    use_case_phrase,
+    view_trade_suggestions_freeform,
+)
+from app.chat.render_structured import (
+    format_basic_option_structured,
+    format_expiration_selection_structured,
+    format_greek_comparison_structured,
+    format_greek_structured,
+    format_long_short_comparison_structured,
+    format_payoff_mechanics_structured,
+    format_strike_selection_structured,
+    income_view_suggestions_structured,
+    view_trade_suggestions_structured,
+)
+from app.core.safety import (
+    ensure_sections,
+    illegal_refusal_template,
+    is_illegal_request,
+    is_trade_recommendation_request,
+)
+from app.core.strategies import get_strategy, normalize_strategy_name
 
 
 def answer_known_question(

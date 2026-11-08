@@ -2,18 +2,17 @@
 heuristic text generation, synthetic options data, isolated in-memory history."""
 from __future__ import annotations
 
-import os
-
 
 def build_service():
-    os.environ["EVAL_DETERMINISTIC"] = "1"
+    from app.config import Settings
+    from app.llm.gateway import LLMGateway
     from app.models import ChatRequest
     from app.providers.options.mock import MockOptionsProvider
     from app.services.chat_service import ChatService
-    from app.services.llm_service import LLMService
     from app.services.memory_store import MemoryStore
 
-    service = ChatService(MockOptionsProvider(), LLMService(), MemoryStore())
+    gateway = LLMGateway(Settings(app_env="test", llm_provider="heuristic"), db=None)
+    service = ChatService(MockOptionsProvider(), gateway, MemoryStore())
 
     def make_request(turn: dict, session_id: str) -> ChatRequest:
         return ChatRequest(**turn, session_id=session_id)

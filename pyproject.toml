@@ -17,6 +17,7 @@ dependencies = [
   "alembic>=1.14",
   "psycopg[binary]>=3.2",
   "numpy>=2.1",
+  "scipy>=1.14",
 ]
 
 [dependency-groups]
@@ -42,4 +43,14 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
-ignore = ["E501"]
+# B008: FastAPI's Depends()/Query() defaults are the framework idiom.
+# UP007: pydantic models keep Optional/Union for readability with older clients.
+ignore = ["E501", "B008", "UP007"]
+
+[tool.ruff.lint.per-file-ignores]
+# Moved verbatim from the 3,101-line chat_service.py (T7); renaming would break
+# the byte-identical characterization guarantee for no behavioural gain.
+"app/chat/*" = ["E741", "B007"]
+"app/core/*" = ["E741"]
+"app/providers/llm/heuristic.py" = ["E741"]
+"eval/*" = ["E741"]

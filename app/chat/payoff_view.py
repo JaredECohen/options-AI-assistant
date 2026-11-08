@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+from app.providers.options.base import DATA_STATUS_LABELS
+
 
 def render_payoff_response(computed: dict) -> str:
     c = computed["computed"]
@@ -12,11 +14,15 @@ def render_payoff_response(computed: dict) -> str:
     max_loss = c["max_loss"]
     breakevens = ", ".join([str(b) for b in c["breakevens"]]) or "N/A"
 
-    summary = f"Computed payoff at expiration using {c['quote_source']} premiums."
-    setup = f"Net {net_label}: {net}. Underlying price used: {c['underlying_price']}."
+    status = c.get("data_status")
+    status_label = DATA_STATUS_LABELS.get(status, "") if status else ""
+    source = c["quote_source"] + (f" ({status_label.lower()})" if status_label else "")
+    summary = f"Computed payoff at expiration using {source} premiums."
+    underlying = c.get("underlying_price")
+    setup = f"Net {net_label}: {net}. Underlying price used: {underlying if underlying is not None else 'not available'}."
     if c.get("premium_note"):
         setup = f"{setup} {c['premium_note']}"
-    payoff = "Payoff curve computed at expiration across a price grid."
+    payoff = "Max profit/loss and breakevens are exact at expiration (evaluated from $0 through every strike and the upper tail); the curve is for display."
     max_profit_line = f"Max Profit: {max_profit}."
     max_loss_line = f"Max Loss: {max_loss}."
     be = f"Breakeven(s): {breakevens}."
@@ -26,8 +32,10 @@ def render_payoff_response(computed: dict) -> str:
         "Use this to evaluate a user-specified position with user-provided premiums when available. "
         f"Beliefs that fit this position: {beliefs}"
     )
-    risks = "Results ignore early exercise, dividends, and transaction costs."
-    assumptions = "Assumes listed equity options, contract multiplier of 100, and expiration payoff only."
+    risks = "Results ignore early exercise, assignment, dividends, commissions and fees."
+    multipliers = sorted({int(leg.get("multiplier", 100)) for leg in c["inputs_used"]["legs"] if leg.get("instrument") == "option"})
+    mult_text = ", ".join(str(m) for m in multipliers) or "100"
+    assumptions = f"Assumes listed equity options, contract multiplier of {mult_text}, and expiration payoff only (USD, before fees)."
     if c.get("underlying_price_note"):
         assumptions = f"{assumptions} {c['underlying_price_note']}"
 

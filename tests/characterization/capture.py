@@ -77,9 +77,10 @@ async def run_case(build, case: dict) -> list[str]:
 
 def build_legacy():
     os.environ["EVAL_DETERMINISTIC"] = "1"
+    from app.services.llm_service import LLMService
+
     from app.providers.options.mock import MockOptionsProvider
     from app.services.chat_service import ChatService
-    from app.services.llm_service import LLMService
     from app.services.memory_store import MemoryStore
 
     return ChatService(MockOptionsProvider(), LLMService(), MemoryStore())

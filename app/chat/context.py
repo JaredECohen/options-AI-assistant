@@ -1,10 +1,9 @@
 """Conversation context: history formatting and the user message sent to the LLM."""
 from __future__ import annotations
 
-from app.models import ChatRequest
-from app.models import OptionLeg
-from app.models import StockLeg
 import json
+
+from app.models import ChatRequest, OptionLeg, StockLeg
 
 
 def normalize_legs(legs):

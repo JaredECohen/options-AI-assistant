@@ -69,5 +69,21 @@ class MockOptionsProvider:
         raise QuoteUnavailable(f"No synthetic contract at strike {strike} {option_type} for {ticker.upper()} {expiration}.")
 
 
+    async def get_daily_bars(self, ticker: str, start: dt.date, end: dt.date) -> list[tuple[dt.date, float]]:
+        """Deterministic synthetic weekday closes (a fixed +/- pattern around the base price)."""
+        pattern = [0.012, -0.008, 0.004, -0.011, 0.009, -0.003, 0.006]
+        price, out, day, i = self._base_price(ticker), [], start, 0
+        while day <= end:
+            if day.weekday() < 5:
+                price *= 1 + pattern[i % len(pattern)]
+                out.append((day, round(price, 4)))
+                i += 1
+            day += dt.timedelta(days=1)
+        return out
+
+    async def get_daily_closes(self, ticker: str, start: dt.date, end: dt.date) -> list[float]:
+        return [c for _d, c in await self.get_daily_bars(ticker, start, end)]
+
+
 def build_mock_provider() -> MockOptionsProvider:
     return MockOptionsProvider()

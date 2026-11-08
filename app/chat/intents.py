@@ -3,8 +3,7 @@
 Pure functions over text and history; no rendering, no I/O."""
 from __future__ import annotations
 
-from app.core.strategies import ALIASES
-from app.core.strategies import STRATEGIES
+from app.core.strategies import ALIASES, STRATEGIES
 
 
 def is_payoff_intent(text: str, has_legs: bool = False) -> bool:

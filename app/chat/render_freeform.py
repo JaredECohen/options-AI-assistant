@@ -1,12 +1,9 @@
 """Freeform (conversational) rendering and the structured-to-freeform rewriter."""
 from __future__ import annotations
 
-from app.core.strategies import ALIASES
-from app.core.strategies import STRATEGIES
-from app.core.strategies import get_strategy
-from app.core.strategies import normalize_strategy_name
 from app.chat.intents import asked_horizon_before, compute_moneyness_range, extract_horizon, extract_percent_range
 from app.chat.labels import convexity_detail_for_strategy, friendly_name, strategy_view_label
+from app.core.strategies import ALIASES, STRATEGIES, get_strategy, normalize_strategy_name
 
 
 def income_menu_freeform(user_text: str) -> str:

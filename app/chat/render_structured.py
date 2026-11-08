@@ -1,12 +1,11 @@
 """Structured (sectioned) response templates."""
 from __future__ import annotations
 
-from app.core.safety import ensure_sections
-from app.core.strategies import get_strategy
-from app.core.strategies import normalize_strategy_name
 from app.chat.intents import compute_moneyness_range, extract_horizon, extract_percent_range
 from app.chat.labels import convexity_detail_for_strategy, friendly_name, strategy_view_label
 from app.chat.render_freeform import format_greek_comparison_freeform
+from app.core.safety import ensure_sections
+from app.core.strategies import get_strategy, normalize_strategy_name
 
 
 def format_view_menu(view: str) -> str:
