@@ -148,6 +148,7 @@ def test_analytics_routes_end_to_end_on_synthetic_data(tmp_path):
     assert r.status_code == 200
     summary = r.json()["summary"]
     assert summary["iv_rank"]["unavailable_reason"] == "insufficient_history"  # no stored history, no backfill
+    assert summary["iv_30d"]["value"] is not None  # bracketing expiries are fetched
     assert summary["hv"]["hv20"]["value"] is not None and r.json()["data_status"] == "synthetic"
     assert "not a market curve" in r.json()["conventions"]["risk_free_rate_source"]
     assert c.get("/api/analytics/SPY/surface", headers=auth(keys)).status_code == 200
@@ -157,3 +158,11 @@ def test_analytics_routes_end_to_end_on_synthetic_data(tmp_path):
                  headers=auth(keys))
     assert scr.status_code == 200 and scr.json()["matches"] == []
     assert all(any(f["reason"] == "insufficient_history" for f in r["failed"]) for r in scr.json()["rejected"])
+
+
+def test_snapshot_expiry_selection_brackets_30_days():
+    from app.analytics.snapshot import select_expiries
+    weekly = [(f"e{d}", float(d)) for d in (7, 14, 21, 28, 35, 42)]
+    assert [d for _e, d in select_expiries(weekly)] == [7.0, 28.0, 35.0]
+    assert [d for _e, d in select_expiries([("a", 45.0), ("b", 60.0)])] == [45.0, 60.0]  # nothing below: no bracket
+    assert select_expiries([]) == []

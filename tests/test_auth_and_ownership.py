@@ -214,3 +214,19 @@ def test_cors_is_exact(tmp_path):
     assert ok.headers.get("access-control-allow-origin") == ORIGIN
     bad = c.options("/api/chat", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
     assert "access-control-allow-origin" not in bad.headers
+
+
+async def test_marketmosaic_suspended_is_an_answer_not_an_outage():
+    def handler(request):
+        return httpx.Response(403, json={"detail": {"code": "account_suspended"}})
+
+    source = MarketMosaicEntitlementSource("https://mm.internal", "svc", transport=httpx.MockTransport(handler))
+    ent = await source.fetch("user_a", "tok")
+    assert ent.account_state == "suspended" and ent.denial_for("chat") == (403, "account_suspended")
+
+    def other_403(request):
+        return httpx.Response(403, json={"detail": {"code": "something_else"}})
+
+    source = MarketMosaicEntitlementSource("https://mm.internal", "svc", transport=httpx.MockTransport(other_403))
+    with pytest.raises(AuthUnavailable):
+        await source.fetch("user_a", "tok")

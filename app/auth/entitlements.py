@@ -101,6 +101,15 @@ class MarketMosaicEntitlementSource:
             raise AuthUnavailable("entitlement service unreachable") from exc
         if resp.status_code == 401:
             raise EntitlementError("entitlement service rejected the token")
+        if resp.status_code == 403:
+            # MarketMosaic's wall answers suspended accounts before the route runs:
+            # {"detail": {"code": "account_suspended", ...}}. That is an answer, not an outage.
+            try:
+                detail = (resp.json() or {}).get("detail") or {}
+            except ValueError:
+                detail = {}
+            if isinstance(detail, dict) and detail.get("code") == "account_suspended":
+                return Entitlements(sub, "suspended", "none", "none", self.name)
         if resp.status_code != 200:
             raise AuthUnavailable(f"entitlement service returned HTTP {resp.status_code}")
         try:

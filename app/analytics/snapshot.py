@@ -90,6 +90,22 @@ class Snapshot:
         }
 
 
+def select_expiries(eligible: list[tuple[str, float]], target: float = 30.0, limit: int = MAX_EXPIRIES) -> list[tuple[str, float]]:
+    """Spend the per-ticker fetch budget where it matters: the two expiries that
+    bracket the 30-day target (needed for constant-maturity IV without
+    extrapolation), then the nearest expiry, then the next ones out."""
+    eligible = sorted(eligible, key=lambda x: x[1])
+    picks: list[tuple[str, float]] = []
+    below = [x for x in eligible if x[1] <= target]
+    above = [x for x in eligible if x[1] > target]
+    for candidate in ([below[-1]] if below else []) + ([above[0]] if above else []) + eligible:
+        if candidate not in picks:
+            picks.append(candidate)
+        if len(picks) >= limit:
+            break
+    return sorted(picks, key=lambda x: x[1])
+
+
 def iv_history(db: Database | None, ticker: str, as_of: dt.date, n: int = 252) -> list[float]:
     if db is None:
         return []
@@ -129,12 +145,9 @@ class SnapshotService:
         p = self.provider
         underlying = await p.get_underlying_price(ticker)
         expirations = await p.list_expirations(ticker)
-        chosen = []
-        for e in expirations:
-            dte = time_to_expiry(e, now) * 365
-            if MIN_DTE <= dte <= MAX_DTE:
-                chosen.append((e, dte))
-        chosen = chosen[:MAX_EXPIRIES]
+        eligible = [(e, time_to_expiry(e, now) * 365) for e in expirations]
+        eligible = [(e, d) for e, d in eligible if MIN_DTE <= d <= MAX_DTE]
+        chosen = select_expiries(eligible)
         term, nearest, skew = [], None, Metric(None, "no_expiry_over_20_days")
         for exp, dte in chosen:
             quotes = await p.get_chain(ticker, exp)
