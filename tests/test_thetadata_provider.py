@@ -289,6 +289,7 @@ async def test_library_chain_parses_dataframes_and_passes_dates():
     assert call.bid == 10.1 and call.greeks.theta == -0.0217 and call.open_interest == 8066
     assert call.quote_time == "2026-11-06T15:59:59.805000-05:00" and call.symbol == "SPY   261218C00600000"
     assert put.bid is None and put.mark is None  # NaN price from the library is not a price
+    assert _num_noise_free()
     method, kwargs = next(c for c in client.calls if c[0] == "option_snapshot_greeks_first_order")
     assert kwargs == {"symbol": "SPY", "expiration": dt.date(2026, 12, 18)}
     await p.get_chain("SPY", EXP)
@@ -361,3 +362,8 @@ def test_library_settings_validation_and_redaction():
     p = build_history_provider(ok)
     assert p.access == "library"
     assert any("THETADATA_ACCESS" in m for m in validate_for_startup(Settings(**prod, thetadata_access="cloud")))
+
+
+def _num_noise_free() -> bool:
+    from app.providers.options.thetadata import _num
+    return _num(30.110000000000003) == 30.11 and _num(0.000123456789) == 0.00012346 and _num(float("nan")) is None

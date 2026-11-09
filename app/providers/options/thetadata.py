@@ -72,7 +72,9 @@ def _num(value: Any) -> float | None:
         out = float(value)
     except (TypeError, ValueError):
         return None
-    return out if math.isfinite(out) else None
+    # The library rebuilds prices as integer x scale factor, so 30.11 arrives as
+    # 30.110000000000003; 8 decimals removes that noise without touching real digits.
+    return round(out, 8) if math.isfinite(out) else None
 
 
 def _int(value: Any) -> int | None:
