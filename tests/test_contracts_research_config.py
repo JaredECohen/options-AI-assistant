@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -176,20 +177,54 @@ def test_health_and_ready(tmp_path):
     assert r.status_code == 200 and r.json()["checks"]["database"] == "ok"
 
 
-def test_health_is_liveness_and_ignores_database(tmp_path):
+def test_health_is_liveness_and_ignores_database(tmp_path, caplog):
     c, _ = client(tmp_path)
 
     def boom():
-        raise RuntimeError("database should not be called for liveness")
+        raise RuntimeError("postgres://oc:secret-pass@db.internal:5432/oc connection refused")
 
     c.app.state.db.ping = boom
     health = c.get("/health")
     assert health.status_code == 200 and health.json()["status"] == "ok"
-    ready = c.get("/ready")
-    assert ready.status_code == 503 and ready.json()["checks"]["database"].startswith("error:")
+    with caplog.at_level(logging.WARNING, logger="app.ready"):
+        ready = c.get("/ready")
+    assert ready.status_code == 503
+    body = ready.json()
+    assert body["status"] == "unavailable"
+    assert body["checks"]["database"] == "unavailable"
+    assert "RuntimeError" not in ready.text
+    assert "secret-pass" not in ready.text
+    assert "postgres://" not in ready.text
+    logged = " ".join(rec.getMessage() for rec in caplog.records)
+    assert "RuntimeError" in logged and "[redacted]" in logged and "secret-pass" not in logged
     cfg = c.get("/api/public/config").json()
     assert cfg["market_data"]["data_status"] == "synthetic" and cfg["llm"]["labelled_demo"] is True
     assert "anthropic_api_key" not in str(cfg).lower()
+
+
+def test_ready_migration_errors_are_generic(tmp_path, caplog):
+    c, _ = client(
+        tmp_path,
+        settings_overrides={"database_url": "postgresql://oc:secret-pass@127.0.0.1:5432/oc"},
+        create_schema=False,
+    )
+    c.app.state.db.ping = lambda: True
+
+    def connect():
+        raise RuntimeError("postgres://oc:secret-pass@127.0.0.1:5432/oc server closed the connection")
+
+    c.app.state.db.engine.connect = connect
+    with caplog.at_level(logging.WARNING, logger="app.ready"):
+        ready = c.get("/ready")
+    assert ready.status_code == 503
+    body = ready.json()
+    assert body["status"] == "unavailable"
+    assert body["checks"]["database"] == "ok"
+    assert body["checks"]["migrations"] == "unavailable"
+    assert "RuntimeError" not in ready.text and "secret-pass" not in ready.text
+    logged = " ".join(rec.getMessage() for rec in caplog.records)
+    assert "migrations" in logged and "RuntimeError" in logged and "[redacted]" in logged
+    assert "secret-pass" not in logged
 
 
 def test_render_requires_explicit_prod_env(monkeypatch):
