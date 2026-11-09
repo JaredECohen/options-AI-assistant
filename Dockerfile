@@ -21,10 +21,12 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./
+COPY scripts/start.sh ./scripts/start.sh
 COPY --from=frontend /frontend/dist ./frontend/dist
 RUN useradd --system --uid 10001 --home /app optionscoach && chown -R optionscoach /app
 USER optionscoach
 # Render injects PORT (default 10000) and requires binding 0.0.0.0.
 ENV PORT=10000
 EXPOSE 10000
-CMD ["sh", "-c", "exec uvicorn app.main:app_factory --factory --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
+# MIGRATE_ON_START=1 runs `alembic upgrade head` first (single-instance plans without pre-deploy).
+CMD ["/app/scripts/start.sh"]

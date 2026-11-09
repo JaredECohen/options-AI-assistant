@@ -1,54 +1,55 @@
-# Render Blueprint for OptionsCoach. PREPARED, NOT APPLIED: creating these
-# resources costs money and needs the owner's approval (docs/RUNBOOK.md step 3).
-# Separate from MarketMosaic's blueprint: own services, own database, own
-# release lifecycle. Keys follow https://render.com/docs/blueprint-spec
-# (runtime, autoDeployTrigger; the deprecated env/autoDeploy keys are not used).
-# Plan names and region are UNRESOLVED choices; the values below are the
-# smallest documented paid tier and MarketMosaic's region so private networking
-# to MarketMosaic is possible (same region + workspace required).
+# Render configuration for OptionsCoach, kept in step with what is deployed.
+# The live resources were created on 2026-11-08 through the Render API (not by
+# applying this file), with the owner's approval: a FREE web service (owner is
+# the only user; cold starts accepted) and a small paid Postgres. Separate from
+# MarketMosaic: own service, own database. Keys follow
+# https://render.com/docs/blueprint-spec.
+# Secrets (sync: false) are entered by the owner in the dashboard, never here.
 
 services:
   - type: web
-    name: optionscoach-staging
+    name: optionscoach
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    region: oregon            # UNRESOLVED: must match MarketMosaic's region for private networking
-    plan: 0.5c-512mb          # UNRESOLVED: confirm in the Render dashboard before applying
+    region: oregon            # same region as MarketMosaic
+    plan: free                # 0.5c-512mb ($7/mo) removes cold starts
     numInstances: 1
-    healthCheckPath: /ready
-    preDeployCommand: alembic upgrade head
-    autoDeployTrigger: "off"  # deploys are explicit until production acceptance
+    # Free plan: no pre-deploy step, so scripts/start.sh migrates on boot (MIGRATE_ON_START).
+    # On a paid plan with >1 instance, use preDeployCommand: alembic upgrade head instead.
+    autoDeployTrigger: commit
     envVars:
       - key: APP_ENV
-        value: staging
+        value: production
+      - key: MIGRATE_ON_START
+        value: "1"
       - key: PUBLIC_BASE_URL
-        value: https://options-staging.marketmosaic.ai
+        value: https://options.marketmosaic.ai
       - key: ALLOWED_ORIGINS
-        value: https://options-staging.marketmosaic.ai
+        value: https://options.marketmosaic.ai
       - key: AUTH_ENABLED
         value: "true"
       - key: CLERK_ISSUER
-        sync: false
+        value: https://clerk.marketmosaic.ai
       - key: CLERK_JWKS_URL
-        sync: false
+        value: https://clerk.marketmosaic.ai/.well-known/jwks.json
       - key: CLERK_AUTHORIZED_PARTIES
-        value: https://options-staging.marketmosaic.ai
+        value: https://options.marketmosaic.ai
       - key: CLERK_PUBLISHABLE_KEY
-        sync: false
+        sync: false               # public value, same as MarketMosaic's (served by its /api/public/config)
       - key: CLERK_JWT_TEMPLATE
         value: marketmosaic
       - key: ENTITLEMENTS_SOURCE
         value: marketmosaic
       - key: MARKETMOSAIC_BASE_URL
-        sync: false               # Render internal host:port of MarketMosaic web, e.g. http://<internal-host>:10000
+        value: https://marketmosaic.ai  # public URL: free services cannot receive private traffic, and MM's internal port is 8000
       - key: MARKETMOSAIC_SERVICE_TOKEN
         sync: false
       - key: OC_SERVICE_TOKEN_HASHES_JSON
         sync: false
       - key: DATABASE_URL
         fromDatabase:
-          name: optionscoach-db-staging
+          name: optionscoach-db
           property: connectionString
       - key: LLM_PROVIDER
         value: anthropic
@@ -66,15 +67,17 @@ services:
         value: tradier
       - key: TRADIER_API_TOKEN
         sync: false
+      - key: TRADIER_ENV
+        value: production          # sandbox if the token is a Tradier sandbox token
       - key: TRADIER_DATA_STATUS
         value: delayed            # change only after the entitlement is confirmed in writing
       - key: RESEARCH_INTEGRATION_ENABLED
-        value: "false"            # enable after MarketMosaic ships /api/v1/research and /api/v1/entitlements
+        value: "true"             # MarketMosaic /api/v1 shipped 2026-11-08 (PR #138)
 
   # Worker: only needed once ingestion is approved (P3). Same image, different entrypoint.
   # Kept commented so applying the blueprint never creates it by accident.
   # - type: worker
-  #   name: optionscoach-worker-staging
+  #   name: optionscoach-worker
   #   runtime: docker
   #   dockerfilePath: ./Dockerfile
   #   dockerCommand: python -m app.worker
@@ -82,21 +85,22 @@ services:
   #   plan: 0.5c-512mb
   #   envVars:
   #     - key: APP_ENV
-  #       value: staging
+  #       value: production
   #     - key: ENABLE_SCHEDULER
   #       value: "1"
   #     - key: INGEST_UNIVERSE
   #       value: SPY,QQQ,IWM
   #     - key: DATABASE_URL
-  #       fromDatabase: {name: optionscoach-db-staging, property: connectionString}
+  #       fromDatabase: {name: optionscoach-db, property: connectionString}
   #     - key: OPTIONS_PROVIDER
   #       value: tradier
   #     - key: TRADIER_API_TOKEN
   #       sync: false
 
 databases:
-  - name: optionscoach-db-staging
+  - name: optionscoach-db
     region: oregon
-    plan: basic-256mb           # UNRESOLVED: confirm plan name and size; OptionsCoach's own DB, never MarketMosaic's
+    plan: 0.1c-256mb            # $6/mo + 1 GB storage; OptionsCoach's own DB, never MarketMosaic's
+    diskSizeGB: 1
     postgresMajorVersion: "16"
     ipAllowList: []             # internal connections only
