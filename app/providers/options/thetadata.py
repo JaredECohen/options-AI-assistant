@@ -49,6 +49,8 @@ import httpx
 
 from .base import EodOption, Greeks, OptionQuote, ProviderUnavailable, QuoteUnavailable
 
+log = logging.getLogger(__name__)
+
 DEFAULT_BASE_URL = "http://127.0.0.1:25503"
 NY = ZoneInfo("America/New_York")
 _ALLOWED_STATUS = {"live", "delayed", "eod"}
@@ -199,7 +201,7 @@ class ThetaDataProvider:
     def __init__(self, base_url: str | None = None, data_status: str = "delayed", timeout_seconds: float = 15.0,
                  max_concurrency: int = 2, transport: httpx.AsyncBaseTransport | None = None,
                  access: str = "terminal", email: str = "", password: str = "", api_key: str = "",
-                 client_factory: Callable[[], object] | None = None):
+                 client_factory: Callable[[], object] | None = None, sign_in_timeout_seconds: float = 60.0):
         status = (data_status or "delayed").lower()
         if status not in _ALLOWED_STATUS:
             raise ValueError(f"THETADATA_DATA_STATUS must be one of {sorted(_ALLOWED_STATUS)}")
@@ -210,6 +212,10 @@ class ThetaDataProvider:
         self._client_factory = client_factory or (lambda: _library_client(email, password, api_key))
         self._client = None
         self._client_lock = threading.Lock()
+        # Signing in takes ~10-15 s, about as long as a whole request may take, so it
+        # gets its own budget, and concurrent first requests share one sign-in.
+        self._sign_in_lock = asyncio.Lock()
+        self._sign_in_timeout = sign_in_timeout_seconds
         self.data_status = status
         self._timeout = timeout_seconds
         self._transport = transport
@@ -275,7 +281,33 @@ class ThetaDataProvider:
             return ProviderUnavailable(f"ThetaData returned {name}.")
         return ProviderUnavailable(f"ThetaData request failed ({kind}).")
 
+    async def _ensure_library_client(self) -> None:
+        if self._client is not None:
+            return
+        async with self._sign_in_lock:
+            if self._client is not None:
+                return
+            try:
+                await asyncio.wait_for(asyncio.to_thread(self._library), self._sign_in_timeout)
+            except TimeoutError as exc:
+                raise ProviderUnavailable("ThetaData sign-in did not finish in time.") from exc
+            except Exception as exc:  # noqa: BLE001 - mapped to the provider contract
+                raise self._map_library_error(exc) from exc
+
+    async def warm_up(self) -> bool:
+        """Sign in before the first request arrives (a cold start would otherwise
+        spend the first request's whole budget signing in). Never raises."""
+        if self.access != "library":
+            return True
+        try:
+            await self._ensure_library_client()
+            return True
+        except Exception as exc:  # noqa: BLE001 - the first real request reports it
+            log.warning("thetadata_warm_up_failed %s", exc.__class__.__name__)
+            return False
+
     async def _get_library(self, path: str, params: dict) -> list[dict]:
+        await self._ensure_library_client()
         async with self._sem:
             self.requests += 1
             try:

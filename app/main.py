@@ -6,10 +6,12 @@ transports and databases. `app` (module level) is what uvicorn serves.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -35,6 +37,19 @@ FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
 MAX_BODY_BYTES = 64 * 1024
 log = logging.getLogger("app")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Providers with a slow sign-in (ThetaData's library) start it now, in the
+    # background, so a cold start does not spend the first request on it.
+    warm_up = getattr(getattr(app.state, "options_provider", None), "warm_up", None)
+    task = asyncio.create_task(warm_up()) if callable(warm_up) else None
+    try:
+        yield
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
 
 
 def _configure_logging(level: str) -> None:
@@ -74,7 +89,7 @@ def create_app(
         raise ConfigError("Refusing to start:\n- " + "\n- ".join(problems))
     _configure_logging(settings.log_level)
 
-    app = FastAPI(title="OptionsCoach", version="0.2.0", docs_url=None if settings.is_prod_like else "/docs",
+    app = FastAPI(title="OptionsCoach", version="0.2.0", lifespan=_lifespan, docs_url=None if settings.is_prod_like else "/docs",
                   redoc_url=None, openapi_url=None if settings.is_prod_like else "/openapi.json")
     state = app.state
     state.settings = settings

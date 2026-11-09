@@ -367,3 +367,52 @@ def test_library_settings_validation_and_redaction():
 def _num_noise_free() -> bool:
     from app.providers.options.thetadata import _num
     return _num(30.110000000000003) == 30.11 and _num(0.000123456789) == 0.00012346 and _num(float("nan")) is None
+
+
+def slow_sign_in_provider(client, sign_in_seconds, **kw):
+    made = []
+
+    def factory():
+        made.append(1)
+        _time.sleep(sign_in_seconds)
+        return client
+
+    return ThetaDataProvider(access="library", client_factory=factory, **kw), made
+
+
+async def test_sign_in_does_not_count_against_the_request_timeout():
+    # Live sign-in took ~15 s against a 15 s request budget: the first request
+    # after every cold start failed with "did not answer in time".
+    client = FakeClient({"option_list_expirations": [{"symbol": "SPY", "expiration": dt.date(2099, 1, 15)}]})
+    p, made = slow_sign_in_provider(client, 0.3, timeout_seconds=0.1, sign_in_timeout_seconds=5)
+    assert await p.list_expirations_all("SPY") == ["2099-01-15"]
+    assert made == [1]
+
+
+async def test_concurrent_first_requests_share_one_sign_in():
+    client = FakeClient({"option_list_expirations": [{"symbol": "SPY", "expiration": dt.date(2099, 1, 15)}]})
+    p, made = slow_sign_in_provider(client, 0.2, max_concurrency=4)
+    results = await asyncio.gather(*(p.list_expirations_all("SPY") for _ in range(4)))
+    assert results == [["2099-01-15"]] * 4
+    assert made == [1]
+
+
+async def test_sign_in_timeout_is_provider_unavailable():
+    p, _ = slow_sign_in_provider(FakeClient(), 0.3, sign_in_timeout_seconds=0.05)
+    with pytest.raises(ProviderUnavailable, match="sign-in did not finish"):
+        await p.list_expirations_all("SPY")
+
+
+async def test_warm_up_signs_in_once_and_never_raises():
+    client = FakeClient({"option_list_expirations": [{"symbol": "SPY", "expiration": dt.date(2099, 1, 15)}]})
+    p, made = lib_provider(client)
+    assert await p.warm_up() is True
+    await p.list_expirations_all("SPY")
+    assert made == [1]  # the request reused the warmed session
+
+    def failing():
+        raise RuntimeError("network down")
+
+    broken = ThetaDataProvider(access="library", client_factory=failing)
+    assert await broken.warm_up() is False
+    assert await ThetaDataProvider(access="terminal").warm_up() is True  # nothing to warm

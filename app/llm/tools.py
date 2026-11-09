@@ -1,7 +1,10 @@
 """Allowlisted, typed chat tools (P9) and the numerical answer validator.
 
 Every tool:
-- has a strict JSON schema (additionalProperties false, bounded strings/arrays),
+- has a strict JSON schema (additionalProperties false, bounded strings). Strict
+  tool use rejects some JSON Schema keywords outright (the whole request fails
+  with a 400, so every chat fails): array length caps such as maxItems are
+  enforced in the handler instead. tests/test_tool_schemas.py pins the list.
 - re-checks the caller's entitlement for the feature it touches,
 - returns provenance (provider, data status, as-of) with its numbers,
 - is read-only: no trades, orders, ingestion or generation. There is no tool
@@ -23,8 +26,24 @@ TICKER = {"type": "string", "pattern": "^[A-Za-z.]{1,10}$"}
 DATE = {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}
 
 
+MAX_SCREEN_TICKERS = 5
+MAX_PAYOFF_LEGS = 8
+# Accepted by JSON Schema but refused by the API for strict tools (verified
+# 2026-11-09 against claude-haiku-5-5: "For 'array' type, property 'maxItems'
+# is not supported").
+STRICT_UNSUPPORTED_KEYWORDS = frozenset({"maxItems"})
+
+
 class ToolDenied(Exception):
     code = "not_entitled"
+
+
+class ToolInputError(Exception):
+    """A limit the schema cannot express; the message is what the model sees."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
 
 
 def _guard(principal, feature: str) -> None:
@@ -49,6 +68,8 @@ def build_tools(principal, state) -> list[ToolSpec]:
 
     async def screen(args: dict) -> dict:
         _guard(principal, "screens")
+        if len(args["tickers"]) > MAX_SCREEN_TICKERS:
+            raise ToolInputError(f"too many tickers: at most {MAX_SCREEN_TICKERS} per screen")
         definition = {"universe": args["tickers"], "limit": 10}
         parsed = screener.parse(definition, preset=args["preset"])
         rows = {}
@@ -58,16 +79,19 @@ def build_tools(principal, state) -> list[ToolSpec]:
 
     tools.append(ToolSpec(
         "run_screen",
-        "Run a named screener preset (cheap_by_hv, high_iv_rank, iv_hv_gap, skew_dislocation) over up to 5 tickers. "
+        "Run a named screener preset (cheap_by_hv, high_iv_rank, iv_hv_gap, skew_dislocation) over up to "
+        f"{MAX_SCREEN_TICKERS} tickers. "
         "Returns matches and, for rejected tickers, the reason (including unavailable metrics).",
         {"type": "object", "properties": {
             "preset": {"type": "string", "enum": sorted(screener.PRESETS)},
-            "tickers": {"type": "array", "items": TICKER, "minItems": 1, "maxItems": 5}},
+            "tickers": {"type": "array", "items": TICKER, "minItems": 1}},
          "required": ["preset", "tickers"], "additionalProperties": False},
         screen))
 
     async def payoff(args: dict) -> dict:
         _guard(principal, "payoff")
+        if len(args["legs"]) > MAX_PAYOFF_LEGS:
+            raise ToolInputError(f"too many legs: at most {MAX_PAYOFF_LEGS} per position")
         legs = []
         for leg in args["legs"]:
             if leg["instrument"] == "stock":
@@ -92,8 +116,7 @@ def build_tools(principal, state) -> list[ToolSpec]:
         "compute_payoff",
         "Authoritative expiration payoff for explicit legs: exact max profit/loss (or 'unlimited'), breakevens, net "
         "debit/credit. Missing premiums are priced from quotes with provenance. Always quote these numbers verbatim.",
-        {"type": "object", "properties": {"ticker": TICKER, "legs": {"type": "array", "items": leg_schema, "minItems": 1,
-                                                                    "maxItems": 8}},
+        {"type": "object", "properties": {"ticker": TICKER, "legs": {"type": "array", "items": leg_schema, "minItems": 1}},
          "required": ["ticker", "legs"], "additionalProperties": False},
         payoff))
 
