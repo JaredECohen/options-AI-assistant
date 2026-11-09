@@ -19,7 +19,8 @@ source; anything not confirmed on an official page is marked UNCONFIRMED.
 | --- | --- | --- | --- | --- | --- |
 | Tradier | free with brokerage account | real-time (production), 15-min delayed (sandbox) | yes (source not named) | none for expired contracts | **personal use only; public apps need Tradier Partner status** (docs.tradier.com/docs/getting-started) |
 | Alpha Vantage | $49.99 historical; $199.99 realtime | unclear | yes | 15+ yrs (2008+) | "personal use" per premium page; ToS unparsed |
-| FMP | none confirmed | — | — | — | — |
+| FMP | none confirmed (docs block automated reads; site search finds no options-chain endpoint, 2026-11-08) | — | — | — | — |
+| ThetaData (v3) | Options Value $40, Standard $80, Pro $160 /mo | real-time on paid tiers | IV + first-order greeks on Standard+ (no gamma below Pro); IV from national bid/mid/ask | 6 / 10 / 14 yrs; EOD greeks history on Standard+ | **Individual: personal use only, no redistribution, display or business use; Business plan for commercial** (thetadata.net/pricing, /commercial-use, terms §1.1, §2.1) |
 | ORATS | $199 delayed; $299 live | delayed / live | yes (own model, SMV) | EOD since 2007 | derived values "internal use only" |
 | Massive (Polygon) | $29 delayed; $199 real-time | delayed / RT | yes (Starter+) | 2–5+ yrs | individual plans; business pricing custom |
 | Cboe DataShop | unpublished | EOD files only | optional add-on | since 2012 | UNCONFIRMED |
@@ -52,3 +53,20 @@ interactivebrokers.com market-data pricing pages.
 - Real-time vs end-of-day for v0 (EOD is cheaper and enough for analytics; chains benefit from live).
 - Which vendor to approach for display rights, and budget.
 - Whether the beta stays "personal use" (owner only) until licensing is in place.
+
+## ThetaData adapter (2026-11-08)
+
+Implemented in `app/providers/options/thetadata.py` from the v3 docs and OpenAPI file; tested only
+against fixtures in the documented shapes (`tests/test_thetadata_provider.py`). Not yet run against
+a live Terminal: after subscribing, run `scripts/thetadata_smoke.py` once.
+
+- **Live:** `OPTIONS_PROVIDER=thetadata`. Chains use `snapshot/greeks/first_order` (Standard), falling back
+  to `snapshot/quote` without greeks on Value; open interest and volume come from two more Value-tier
+  calls; the underlying comes from `stock/snapshot/quote`, or from greeks rows when the plan has no stock data.
+- **History:** `OPTIONS_HISTORY_PROVIDER=thetadata` enables `app/jobs/iv_backfill.py`. That job rebuilds a year of
+  daily 30-day ATM IV from `option/history/greeks/eod` (Standard; falls back to `option/history/eod`), using the
+  same model-IV method as daily ingestion, so IV rank and IV percentile become available right away.
+  It costs about one request per expiry that brackets 30 days (roughly 60 to 80 per ticker-year for weeklies).
+- **Licence:** suitable while the owner is the only user. Anyone else seeing ThetaData-derived values needs the Business plan.
+- **Operational unknowns** (not documented by ThetaData): the config key that binds the Terminal to a non-local
+  host, its memory needs, and whether one Terminal tolerates more than one client IP (error 476 WRONG_IP).

@@ -1,4 +1,4 @@
-"""Explicit options-provider selection.
+"""Explicit options-provider selection (tradier, thetadata, mock).
 
 No silent substitution: a missing Tradier token used to fall back to the mock
 provider, which made synthetic prices look like market data. Now the provider
@@ -11,6 +11,7 @@ from app.config import Settings
 
 from .base import OptionsDataProvider
 from .mock import MockOptionsProvider
+from .thetadata import ThetaDataProvider
 from .tradier import TradierProvider
 
 
@@ -29,4 +30,22 @@ def build_options_provider(settings: Settings) -> OptionsDataProvider:
         return MockOptionsProvider()
     if name == "tradier":
         return TradierProvider(data_status=settings.tradier_data_status)
-    raise ProviderConfigError(f"Unknown OPTIONS_PROVIDER '{name}' (expected tradier or mock).")
+    if name == "thetadata":
+        return _thetadata(settings)
+    raise ProviderConfigError(f"Unknown OPTIONS_PROVIDER '{name}' (expected tradier, thetadata or mock).")
+
+
+def _thetadata(settings: Settings) -> ThetaDataProvider:
+    return ThetaDataProvider(base_url=settings.thetadata_base_url, data_status=settings.thetadata_data_status,
+                             timeout_seconds=settings.thetadata_timeout_seconds,
+                             max_concurrency=settings.thetadata_max_concurrency)
+
+
+def build_history_provider(settings: Settings) -> ThetaDataProvider | None:
+    """Source for the IV-history backfill. Only ThetaData has historical option
+    quotes among the supported providers; None when not configured."""
+    if settings.options_history_provider == "thetadata":
+        return _thetadata(settings)
+    if settings.options_history_provider:
+        raise ProviderConfigError(f"Unknown OPTIONS_HISTORY_PROVIDER '{settings.options_history_provider}'.")
+    return None

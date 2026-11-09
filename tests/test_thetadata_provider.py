@@ -1,0 +1,205 @@
+"""ThetaData adapter against fixtures in the shapes documented by ThetaData's v3
+OpenAPI examples (nested contract/data rows, uppercase right, some greeks as
+strings). No Terminal and no network: an httpx MockTransport serves them."""
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+
+import httpx
+import pytest
+
+from app.config import Settings, validate_for_startup
+from app.providers.options.base import ProviderUnavailable, QuoteUnavailable
+from app.providers.options.factory import ProviderConfigError, build_history_provider, build_options_provider
+from app.providers.options.thetadata import ThetaDataProvider, flatten, ny_iso, occ_symbol
+
+EXP = "2026-12-18"
+
+
+def chain_row(strike, right, bid, ask, iv, delta, theta="-0.0217"):
+    return {"contract": {"symbol": "SPY", "strike": strike, "right": right, "expiration": EXP},
+            "data": [{"bid": bid, "ask": ask, "implied_vol": iv, "delta": delta, "theta": theta, "vega": 26.3,
+                      "rho": 9.1, "iv_error": "-0.0003", "underlying_price": 600.5,
+                      "underlying_timestamp": "2026-11-06T16:37:06.98", "timestamp": "2026-11-06T15:59:59.805"}]}
+
+
+FIRST_ORDER = {"response": [chain_row(600.0, "CALL", 10.1, 10.3, 0.18, 0.52),
+                            chain_row(600.0, "PUT", 9.0, 9.2, 0.19, -0.48),
+                            chain_row(610.0, "CALL", 5.0, 5.2, "0", 0.35),  # zero IV -> None
+                            {"contract": {"symbol": "SPY", "strike": 620.0, "right": "weird", "expiration": EXP},
+                             "data": [{"bid": 1, "ask": 2}]}]}
+OI = {"response": [{"contract": {"symbol": "SPY", "strike": 600.0, "right": "CALL", "expiration": EXP},
+                    "data": [{"open_interest": 8066, "timestamp": "2026-11-06T06:30:13"}]}]}
+OHLC = {"response": [{"contract": {"symbol": "SPY", "strike": 600.0, "right": "PUT", "expiration": EXP},
+                      "data": [{"open": 9, "high": 9.5, "low": 8.8, "close": 9.1, "volume": 1234, "count": 50}]}]}
+
+
+class Terminal:
+    """Routes by path; `codes` forces an HTTP status per path."""
+
+    def __init__(self, routes=None, codes=None, delay=0.0):
+        self.routes = routes or {}
+        self.codes = codes or {}
+        self.delay = delay
+        self.calls: list[tuple[str, dict]] = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        path, params = request.url.path, dict(request.url.params)
+        self.calls.append((path, params))
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            if path in self.codes:
+                return httpx.Response(self.codes[path], text="error")
+            if path not in self.routes:
+                return httpx.Response(472, text="NO_DATA")
+            return httpx.Response(200, json=self.routes[path])
+        finally:
+            self.in_flight -= 1
+
+    def provider(self, **kw) -> ThetaDataProvider:
+        return ThetaDataProvider(base_url="http://terminal:25503", transport=httpx.MockTransport(self.handler), **kw)
+
+
+def test_flatten_accepts_nested_wrapped_bare_and_flat():
+    nested = flatten({"response": [chain_row(1.0, "CALL", 1, 2, 0.2, 0.5)]})
+    assert nested[0]["strike"] == 1.0 and nested[0]["bid"] == 1 and nested[0]["right"] == "CALL"
+    assert flatten([{"symbol": "X", "expiration": "2026-01-16"}]) == [{"symbol": "X", "expiration": "2026-01-16"}]
+    assert flatten({"response": {"contract": {"strike": 2}, "data": {"bid": 1}}}) == [{"bid": 1, "strike": 2}]
+
+
+def test_occ_symbol_and_new_york_timestamps():
+    assert occ_symbol("SPY", "2026-12-18", "put", 600.0) == "SPY   261218P00600000"
+    assert occ_symbol("BRK.B", "2026-01-16", "call", 412.5) == "BRK.B 260116C00412500"
+    assert ny_iso("2026-11-06T15:59:59.805") == "2026-11-06T15:59:59.805000-05:00"  # EST after Nov 1
+    assert ny_iso("2026-07-06T16:37:06.98").endswith("-04:00")  # 2 fractional digits, EDT
+    assert ny_iso("garbage") is None
+
+
+async def test_chain_merges_greeks_oi_and_volume_with_provenance():
+    t = Terminal({"/v3/option/snapshot/greeks/first_order": FIRST_ORDER, "/v3/option/snapshot/open_interest": OI,
+                  "/v3/option/snapshot/ohlc": OHLC})
+    chain = await t.provider().get_chain("spy", EXP)
+    assert [(q.strike, q.option_type) for q in chain] == [(600.0, "call"), (600.0, "put"), (610.0, "call")]
+    call, put, otm = chain
+    assert call.symbol == "SPY   261218C00600000" and call.mark == pytest.approx(10.2)
+    assert call.open_interest == 8066 and call.volume is None
+    assert put.volume == 1234 and put.last == 9.1 and put.open_interest is None
+    assert call.implied_volatility == 0.18 and call.iv_source.startswith("thetadata")
+    assert call.greeks.theta == -0.0217 and call.greeks.gamma is None and call.greeks.source == "thetadata"
+    assert otm.implied_volatility is None  # a zero IV is not a volatility
+    assert call.quote_time.endswith("-05:00") and call.multiplier == 100
+    for _path, params in t.calls:
+        assert params["format"] == "json" and params["expiration"] == "20261218" and params["symbol"] == "SPY"
+
+
+async def test_value_tier_falls_back_to_quotes_without_greeks():
+    quote = {"response": [{"contract": {"symbol": "SPY", "strike": 600.0, "right": "CALL", "expiration": EXP},
+                           "data": [{"bid": 10.1, "ask": 10.3, "bid_size": 5, "timestamp": "2026-11-06T15:59:59.805"}]}]}
+    t = Terminal({"/v3/option/snapshot/quote": quote}, codes={"/v3/option/snapshot/greeks/first_order": 471})
+    (q,) = await t.provider().get_chain("SPY", EXP)
+    assert q.greeks is None and q.implied_volatility is None and q.bid == 10.1
+
+
+@pytest.mark.parametrize("code,exc", [(471, ProviderUnavailable), (474, ProviderUnavailable), (478, ProviderUnavailable),
+                                      (429, ProviderUnavailable), (571, ProviderUnavailable), (404, ProviderUnavailable),
+                                      (473, QuoteUnavailable), (472, QuoteUnavailable)])
+async def test_error_codes_map_to_honest_failures(code, exc):
+    t = Terminal(codes={"/v3/option/list/expirations": code})
+    with pytest.raises(exc):
+        await t.provider().list_expirations_all("SPY")
+
+
+async def test_terminal_not_running_is_provider_unavailable():
+    def refuse(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    p = ThetaDataProvider(base_url="http://terminal:25503", transport=httpx.MockTransport(refuse))
+    with pytest.raises(ProviderUnavailable, match="not reachable"):
+        await p.get_underlying_price("SPY")
+
+
+async def test_underlying_prefers_stock_mid_then_option_rows():
+    stock = {"response": [{"symbol": "SPY", "bid": 600.0, "ask": 600.2}]}
+    assert await Terminal({"/v3/stock/snapshot/quote": stock}).provider().get_underlying_price("SPY") == pytest.approx(600.1)
+    t = Terminal({"/v3/option/snapshot/greeks/implied_volatility": FIRST_ORDER},
+                 codes={"/v3/stock/snapshot/quote": 471})
+    assert await t.provider().get_underlying_price("SPY") == 600.5
+    with pytest.raises(QuoteUnavailable):
+        await Terminal(codes={"/v3/stock/snapshot/quote": 471}).provider().get_underlying_price("SPY")
+
+
+async def test_expirations_all_and_future_only():
+    rows = {"response": [{"symbol": "SPY", "expiration": "2012-06-01"}, {"symbol": "SPY", "expiration": "2099-01-15"},
+                         {"symbol": "SPY", "expiration": "20990122"}]}
+    p = Terminal({"/v3/option/list/expirations": rows}).provider()
+    assert await p.list_expirations_all("SPY") == ["2012-06-01", "2099-01-15", "2099-01-22"]
+    assert await p.list_expirations("SPY") == ["2099-01-15", "2099-01-22"]
+
+
+async def test_eod_history_parses_rows_and_falls_back_by_tier():
+    eod_greeks = {"response": [{"contract": {"symbol": "SPY", "strike": 600.0, "right": "PUT", "expiration": EXP},
+                                "data": [{"bid": 9.0, "ask": 9.2, "implied_vol": 0.19, "underlying_price": 600.5,
+                                          "timestamp": "2026-11-05T17:15:00.000"},
+                                         {"bid": 8.0, "ask": 8.3, "underlying_price": 603.0,
+                                          "timestamp": "2026-11-06T17:15:00.000"}]}]}
+    t = Terminal({"/v3/option/history/greeks/eod": eod_greeks})
+    rows = await t.provider().get_eod_options("SPY", EXP, dt.date(2026, 11, 5), dt.date(2026, 11, 6))
+    assert [(r.date, r.bid, r.underlying_price) for r in rows] == [(dt.date(2026, 11, 5), 9.0, 600.5),
+                                                                    (dt.date(2026, 11, 6), 8.0, 603.0)]
+    path, params = t.calls[0]
+    assert params["start_date"] == "20261105" and params["end_date"] == "20261106" and params["strike_range"] == "40"
+    plain = {"response": [{"contract": {"symbol": "SPY", "strike": 600.0, "right": "CALL", "expiration": EXP},
+                           "data": [{"bid": 1.0, "ask": 1.1, "created": "2026-11-05T17:15:00"}]}]}
+    t2 = Terminal({"/v3/option/history/eod": plain}, codes={"/v3/option/history/greeks/eod": 471})
+    (r,) = await t2.provider().get_eod_options("SPY", EXP, dt.date(2026, 11, 5), dt.date(2026, 11, 5))
+    assert r.underlying_price is None and r.date == dt.date(2026, 11, 5)
+    assert await Terminal().provider().get_eod_options("SPY", EXP, dt.date(2026, 11, 5), dt.date(2026, 11, 5)) == []
+
+
+async def test_daily_bars_and_missing_stock_permission():
+    bars = {"response": [{"symbol": "SPY", "close": 600.0, "last_trade": "2026-11-05T15:59:59"},
+                         {"symbol": "SPY", "close": "nan", "last_trade": "2026-11-06T15:59:59"}]}
+    assert await Terminal({"/v3/stock/history/eod": bars}).provider().get_daily_bars(
+        "SPY", dt.date(2026, 11, 1), dt.date(2026, 11, 6)) == [(dt.date(2026, 11, 5), 600.0)]
+    assert await Terminal(codes={"/v3/stock/history/eod": 471}).provider().get_daily_bars(
+        "SPY", dt.date(2026, 11, 1), dt.date(2026, 11, 6)) == []
+
+
+async def test_concurrency_is_capped():
+    t = Terminal({"/v3/option/list/expirations": {"response": []}}, delay=0.02)
+    p = t.provider(max_concurrency=2)
+    await asyncio.gather(*(p.list_expirations_all("SPY") for _ in range(8)))
+    assert t.max_in_flight == 2 and p.requests == 8
+
+
+async def test_symbol_and_expiration_validation():
+    p = Terminal().provider()
+    with pytest.raises(QuoteUnavailable):
+        await p.get_chain("SPY,QQQ", EXP)
+    with pytest.raises(QuoteUnavailable):
+        await p.get_chain("SPY", "20261218")
+
+
+def test_factory_and_config():
+    s = Settings(app_env="test", options_provider="thetadata", thetadata_data_status="eod",
+                 thetadata_base_url="http://theta:25503", options_history_provider="thetadata")
+    p = build_options_provider(s)
+    assert isinstance(p, ThetaDataProvider) and p.data_status == "eod" and p.base_url == "http://theta:25503"
+    assert isinstance(build_history_provider(s), ThetaDataProvider)
+    assert build_history_provider(Settings(app_env="test")) is None
+    with pytest.raises(ProviderConfigError):
+        build_history_provider(Settings(app_env="test", options_history_provider="fmp"))
+    with pytest.raises(ValueError):
+        ThetaDataProvider(data_status="real-time")
+    prod = dict(app_env="production", auth_enabled=True, clerk_issuer="i", clerk_jwks_url="j",
+                clerk_authorized_parties=("https://x",), allowed_origins=("https://x",),
+                database_url="postgresql://x/y", marketmosaic_base_url="https://mm", anthropic_api_key="k")
+    assert not any("OPTIONS" in p for p in validate_for_startup(Settings(**prod, options_provider="thetadata")))
+    assert any("OPTIONS_HISTORY_PROVIDER" in p for p in
+               validate_for_startup(Settings(**prod, options_provider="tradier", options_history_provider="fmp")))

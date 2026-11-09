@@ -45,10 +45,15 @@ never committed, never logged. `prod` = required in staging and production; `wor
 | `LLM_GLOBAL_DAILY_TOKEN_BUDGET` |  | optional | all users per UTC day, default 5000000 |
 | `LLM_CIRCUIT_FAILURES` |  | optional | consecutive failures that open the breaker, default 5 |
 | `LLM_CIRCUIT_COOLDOWN_SECONDS` |  | optional | breaker half-open delay, default 60 |
-| `OPTIONS_PROVIDER` |  | prod | tradier / mock (mock only in dev/test or DEMO_MODE) |
+| `OPTIONS_PROVIDER` |  | prod | tradier / thetadata / mock (mock only in dev/test or DEMO_MODE) |
 | `TRADIER_API_TOKEN` | yes | prod | Tradier market-data token (secret) |
 | `TRADIER_ENV` |  | optional | production / sandbox |
 | `TRADIER_DATA_STATUS` |  | optional | live / delayed / eod as entitled; default delayed |
+| `THETADATA_BASE_URL` |  | optional | Theta Terminal v3 REST base, default http://127.0.0.1:25503 |
+| `THETADATA_DATA_STATUS` |  | optional | live / delayed / eod as entitled; default delayed |
+| `THETADATA_TIMEOUT_SECONDS` |  | optional | per request, default 15 |
+| `THETADATA_MAX_CONCURRENCY` |  | optional | in-flight requests to the Terminal; Value 2, Standard 4, Pro 8 (default 2) |
+| `OPTIONS_HISTORY_PROVIDER` |  | optional | thetadata / unset: source for the IV-history backfill (IV rank/percentile) |
 | `RATE_LIMIT_PER_MIN` |  | optional | chat requests per user per minute, default 20 |
 | `RETENTION_DAYS_CONVERSATIONS` |  | optional | conversation retention, default 365 |
 | `RESEARCH_INTEGRATION_ENABLED` |  | optional | 1 enables MarketMosaic stored-research reads |
