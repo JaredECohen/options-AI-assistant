@@ -67,10 +67,15 @@ ENV_VARS: dict[str, tuple[str, str]] = {
     "LLM_GLOBAL_DAILY_TOKEN_BUDGET": ("all users per UTC day, default 5000000", "optional"),
     "LLM_CIRCUIT_FAILURES": ("consecutive failures that open the breaker, default 5", "optional"),
     "LLM_CIRCUIT_COOLDOWN_SECONDS": ("breaker half-open delay, default 60", "optional"),
-    "OPTIONS_PROVIDER": ("tradier | mock (mock only in dev/test or DEMO_MODE)", "prod"),
+    "OPTIONS_PROVIDER": ("tradier | thetadata | mock (mock only in dev/test or DEMO_MODE)", "prod"),
     "TRADIER_API_TOKEN": ("Tradier market-data token (secret)", "prod"),
     "TRADIER_ENV": ("production | sandbox", "optional"),
     "TRADIER_DATA_STATUS": ("live | delayed | eod as entitled; default delayed", "optional"),
+    "THETADATA_BASE_URL": ("Theta Terminal v3 REST base, default http://127.0.0.1:25503", "optional"),
+    "THETADATA_DATA_STATUS": ("live | delayed | eod as entitled; default delayed", "optional"),
+    "THETADATA_TIMEOUT_SECONDS": ("per request, default 15", "optional"),
+    "THETADATA_MAX_CONCURRENCY": ("in-flight requests to the Terminal; Value 2, Standard 4, Pro 8 (default 2)", "optional"),
+    "OPTIONS_HISTORY_PROVIDER": ("thetadata | unset: source for the IV-history backfill (IV rank/percentile)", "optional"),
     "RATE_LIMIT_PER_MIN": ("chat requests per user per minute, default 20", "optional"),
     "RETENTION_DAYS_CONVERSATIONS": ("conversation retention, default 365", "optional"),
     "RESEARCH_INTEGRATION_ENABLED": ("1 enables MarketMosaic stored-research reads", "optional"),
@@ -149,6 +154,11 @@ class Settings:
     llm_circuit_cooldown_seconds: float = 60.0
     options_provider: str = "mock"
     tradier_data_status: str = "delayed"
+    thetadata_base_url: str = "http://127.0.0.1:25503"
+    thetadata_data_status: str = "delayed"
+    thetadata_timeout_seconds: float = 15.0
+    thetadata_max_concurrency: int = 2
+    options_history_provider: str = ""
     rate_limit_per_min: int = 20
     retention_days_conversations: int = 365
     research_integration_enabled: bool = False
@@ -231,6 +241,11 @@ def load_settings() -> Settings:
         llm_circuit_cooldown_seconds=_float("LLM_CIRCUIT_COOLDOWN_SECONDS", 60.0),
         options_provider=os.getenv("OPTIONS_PROVIDER", "mock" if is_dev else "tradier").lower(),
         tradier_data_status=os.getenv("TRADIER_DATA_STATUS", "delayed").lower(),
+        thetadata_base_url=os.getenv("THETADATA_BASE_URL", "http://127.0.0.1:25503").rstrip("/"),
+        thetadata_data_status=os.getenv("THETADATA_DATA_STATUS", "delayed").lower(),
+        thetadata_timeout_seconds=_float("THETADATA_TIMEOUT_SECONDS", 15.0),
+        thetadata_max_concurrency=_int("THETADATA_MAX_CONCURRENCY", 2),
+        options_history_provider=os.getenv("OPTIONS_HISTORY_PROVIDER", "").lower(),
         rate_limit_per_min=_int("RATE_LIMIT_PER_MIN", 20),
         retention_days_conversations=_int("RETENTION_DAYS_CONVERSATIONS", 365),
         research_integration_enabled=_bool("RESEARCH_INTEGRATION_ENABLED"),
@@ -277,6 +292,10 @@ def validate_for_startup(s: Settings) -> list[str]:
         problems.append("ENTITLEMENTS_SOURCE=static is a dev/test fixture; use marketmosaic.")
     if s.entitlements_source == "marketmosaic" and not s.marketmosaic_base_url:
         problems.append("ENTITLEMENTS_SOURCE=marketmosaic requires MARKETMOSAIC_BASE_URL.")
+    if s.options_provider not in ("tradier", "thetadata", "mock"):
+        problems.append("OPTIONS_PROVIDER must be tradier, thetadata or mock.")
+    if s.options_history_provider not in ("", "thetadata"):
+        problems.append("OPTIONS_HISTORY_PROVIDER must be thetadata or unset.")
     if s.options_provider == "mock" and not s.demo_mode:
         problems.append("OPTIONS_PROVIDER=mock serves synthetic prices; set DEMO_MODE=1 to allow it (it is labelled).")
     if s.llm_provider == "heuristic" and not s.demo_mode:

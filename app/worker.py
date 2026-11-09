@@ -18,16 +18,19 @@ from app.config import load_settings
 from app.db.session import Database
 from app.jobs import queue
 from app.jobs.ingest import ingest_chain_snapshot, ingest_daily_bars
-from app.providers.options.factory import build_options_provider
+from app.jobs.iv_backfill import backfill_iv_history
+from app.providers.options.factory import build_history_provider, build_options_provider
 
 log = logging.getLogger("app.worker")
 POLL_SECONDS = 5
 
 
 class Worker:
-    def __init__(self, db: Database, provider, cfg: AnalyticsConfig, worker_id: str | None = None):
+    def __init__(self, db: Database, provider, cfg: AnalyticsConfig, worker_id: str | None = None,
+                 history_provider=None):
         self.db = db
         self.provider = provider
+        self.history_provider = history_provider
         self.cfg = cfg
         self.worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}"
         self.stopping = False
@@ -44,6 +47,10 @@ class Worker:
             return await ingest_chain_snapshot(self.db, self.provider, job.payload, self.cfg, should_continue)
         if job.kind == "ingest_daily_bars":
             return await ingest_daily_bars(self.db, self.provider, job.payload)
+        if job.kind == "backfill_iv_history":
+            if self.history_provider is None:
+                raise RuntimeError("blocked: OPTIONS_HISTORY_PROVIDER is not configured (ThetaData)")
+            return await backfill_iv_history(self.db, self.history_provider, job.payload, self.cfg, should_continue)
         if job.kind == "backtest":
             raise RuntimeError("blocked: no backtesting engine is configured (see docs/TRACEABILITY.md P7)")
         raise RuntimeError(f"unknown job kind {job.kind}")
@@ -69,6 +76,15 @@ class Worker:
             for kind in ("ingest_daily_bars", "ingest_chain_snapshot"):
                 queue.enqueue(self.db, kind, f"{kind}:{ticker}:{today.isoformat()}", {"ticker": ticker})
                 n += 1
+            if self.history_provider is not None:
+                # One full year per ticker, ever (the key never changes), then a
+                # nightly one-week top-up so missed days fill themselves in.
+                # Both are idempotent through iv_daily's natural key.
+                queue.enqueue(self.db, "backfill_iv_history", f"backfill_iv_history:{ticker}:full",
+                              {"ticker": ticker, "days": 365})
+                queue.enqueue(self.db, "backfill_iv_history", f"backfill_iv_history:{ticker}:{today.isoformat()}",
+                              {"ticker": ticker, "days": 7})
+                n += 2
         return n
 
     async def run_forever(self, schedule_universe: list[str] | None = None) -> None:
@@ -88,7 +104,8 @@ def main() -> None:
     settings = load_settings()
     logging.basicConfig(level=settings.log_level)
     db = Database(settings.database_url, settings.db_pool_size)
-    worker = Worker(db, build_options_provider(settings), AnalyticsConfig())
+    worker = Worker(db, build_options_provider(settings), AnalyticsConfig(),
+                    history_provider=build_history_provider(settings))
     universe = [t.strip().upper() for t in os.getenv("INGEST_UNIVERSE", "").split(",") if t.strip()]
     scheduler = os.getenv("ENABLE_SCHEDULER", "0") == "1"
     loop = asyncio.new_event_loop()

@@ -8,6 +8,7 @@ returns None rather than a fabricated value.
 """
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import asdict, dataclass, field
 from typing import Literal, Protocol
 
@@ -64,6 +65,19 @@ class OptionQuote:
         data = asdict(self)
         data.pop("extra", None)
         return data
+
+
+@dataclass(frozen=True)
+class EodOption:
+    """One contract's end-of-day close quote (history providers only)."""
+
+    date: dt.date
+    expiration: str  # YYYY-MM-DD
+    strike: float
+    option_type: str  # "call" | "put"
+    bid: float | None
+    ask: float | None
+    underlying_price: float | None = None
 
 
 class OptionsDataProvider(Protocol):

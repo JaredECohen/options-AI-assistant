@@ -113,12 +113,26 @@ def select_expiries(eligible: list[tuple[str, float]], target: float = 30.0, lim
 def iv_history(db: Database | None, ticker: str, as_of: dt.date, n: int = 252) -> list[float]:
     if db is None:
         return []
+    # One observation per date: the same day can be stored by more than one
+    # provider (daily ingestion and a history backfill). The method is
+    # identical (our own model IV), so the first row per date is kept,
+    # ordered by provider name for determinism.
     with db.session() as s:
         rows = s.execute(
-            select(IVDaily.iv).where(IVDaily.symbol == ticker, IVDaily.date <= as_of, IVDaily.method == IV_METHOD)
-            .order_by(IVDaily.date.desc()).limit(n)
-        ).scalars().all()
-    return list(reversed(rows))
+            select(IVDaily.date, IVDaily.iv).where(IVDaily.symbol == ticker, IVDaily.date <= as_of,
+                                                   IVDaily.method == IV_METHOD)
+            .order_by(IVDaily.date.desc(), IVDaily.provider).limit(n * 3)
+        ).all()
+    out: list[float] = []
+    seen: set[dt.date] = set()
+    for day, iv in rows:
+        if day in seen:
+            continue
+        seen.add(day)
+        out.append(iv)
+        if len(out) >= n:
+            break
+    return list(reversed(out))
 
 
 class SnapshotService:
