@@ -2,11 +2,23 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import subprocess
+from pathlib import Path
 
 import httpx
 import pytest
 
-from app.config import ENV_VARS, ConfigError, Settings, validate_for_startup
+from app.config import (
+    DATABASE_URL_MISSING,
+    DATABASE_URL_NOT_POSTGRES,
+    ENV_VARS,
+    ConfigError,
+    Settings,
+    database_url_from_env,
+    load_settings,
+    validate_for_startup,
+)
 from app.integrations import course_context
 from app.integrations.marketmosaic import MarketMosaicResearchClient, ResearchUnavailable
 from app.main import create_app
@@ -117,7 +129,8 @@ def test_course_context_blocked_without_cleared_rights(tmp_path):
 @pytest.mark.parametrize("override,problem", [
     ({"auth_enabled": False}, "AUTH_ENABLED must be true"),
     ({"clerk_authorized_parties": ()}, "CLERK_AUTHORIZED_PARTIES"),
-    ({"database_url": "sqlite:///x.db"}, "Postgres"),
+    ({"database_url": "sqlite:///x.db"}, "not a fallback"),
+    ({"database_url": ""}, "DATABASE_URL is required"),
     ({"options_provider": "mock"}, "DEMO_MODE=1"),
     ({"llm_provider": "heuristic"}, "DEMO_MODE=1"),
     ({"allowed_origins": ("*",)}, "wildcards"),
@@ -161,13 +174,25 @@ def test_health_and_ready(tmp_path):
     assert c.get("/health").json()["status"] == "ok"
     r = c.get("/ready")
     assert r.status_code == 200 and r.json()["checks"]["database"] == "ok"
+
+
+def test_health_is_liveness_and_ignores_database(tmp_path):
+    c, _ = client(tmp_path)
+
+    def boom():
+        raise RuntimeError("database should not be called for liveness")
+
+    c.app.state.db.ping = boom
+    health = c.get("/health")
+    assert health.status_code == 200 and health.json()["status"] == "ok"
+    ready = c.get("/ready")
+    assert ready.status_code == 503 and ready.json()["checks"]["database"].startswith("error:")
     cfg = c.get("/api/public/config").json()
     assert cfg["market_data"]["data_status"] == "synthetic" and cfg["llm"]["labelled_demo"] is True
     assert "anthropic_api_key" not in str(cfg).lower()
 
 
 def test_render_requires_explicit_prod_env(monkeypatch):
-    from app.config import load_settings
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.delenv("APP_ENV", raising=False)
     with pytest.raises(ConfigError, match="APP_ENV must be set"):
@@ -175,6 +200,66 @@ def test_render_requires_explicit_prod_env(monkeypatch):
     monkeypatch.setenv("APP_ENV", "development")
     with pytest.raises(ConfigError):
         load_settings()
+
+
+def test_production_does_not_invent_a_database(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+    settings = load_settings()
+    assert settings.database_url == ""
+    problems = validate_for_startup(settings)
+    assert DATABASE_URL_MISSING in problems
+    with pytest.raises(ConfigError, match="DATABASE_URL is required"):
+        database_url_from_env()
+
+
+def test_dev_without_database_url_uses_local_sqlite(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+    assert load_settings().database_url == "sqlite:///./optionscoach-dev.db"
+
+
+def _start_script(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    clean = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp")}
+    clean.update(env)
+    return subprocess.run(
+        ["sh", "scripts/start.sh"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=clean,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def test_start_script_messages_match_config():
+    script = (Path(__file__).resolve().parents[1] / "scripts/start.sh").read_text()
+    assert DATABASE_URL_MISSING in script
+    assert DATABASE_URL_NOT_POSTGRES in script
+
+
+def test_start_script_explains_missing_database_url():
+    proc = _start_script({"APP_ENV": "production"})
+    assert proc.returncode == 1
+    assert proc.stderr.strip() == DATABASE_URL_MISSING
+    dev = _start_script({"APP_ENV": "development", "MIGRATE_ON_START": "1"})
+    assert dev.returncode == 1 and dev.stderr.strip() == DATABASE_URL_MISSING
+
+
+def test_start_script_refuses_sqlite_in_production():
+    proc = _start_script({"APP_ENV": "production", "DATABASE_URL": "sqlite:///tmp/optionscoach.db"})
+    assert proc.returncode == 1
+    assert proc.stderr.strip() == DATABASE_URL_NOT_POSTGRES
+
+
+def test_start_script_still_boots_dev_without_database_url():
+    proc = _start_script({"APP_ENV": "development", "MIGRATE_ON_START": "0"})
+    assert proc.returncode != 0
+    assert "uvicorn" in proc.stderr
+    assert "optionscoach-db" not in proc.stderr
 
 
 def test_auth_off_dev_refuses_real_database():

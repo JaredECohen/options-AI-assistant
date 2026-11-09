@@ -120,6 +120,29 @@ class ConfigError(RuntimeError):
     pass
 
 
+# Boot failures name the variable and its Render source. Staging and production
+# never substitute a local SQLite file when this is missing.
+DATABASE_URL_MISSING = (
+    "DATABASE_URL is required and is unset. "
+    "On Render it must be the internal connection string of the optionscoach-db Postgres database, "
+    "wired in render.yaml with fromDatabase name optionscoach-db property connectionString. "
+    "Link that variable on the optionscoach web service or sync the blueprint, then redeploy. "
+    "Do not commit the value. Staging and production do not fall back to SQLite."
+)
+DATABASE_URL_NOT_POSTGRES = (
+    "DATABASE_URL must be a Postgres URL for the optionscoach-db database in staging/production. "
+    "SQLite is only for local development and is not a fallback here."
+)
+
+
+def database_url_from_env() -> str:
+    """Return DATABASE_URL for migrations. Never substitutes SQLite."""
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        raise ConfigError(DATABASE_URL_MISSING)
+    return url
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: AppEnv = "development"
@@ -302,8 +325,10 @@ def validate_for_startup(s: Settings) -> list[str]:
         problems.append("CLERK_AUTHORIZED_PARTIES must list the allowed origins in staging/production.")
     if not s.allowed_origins:
         problems.append("ALLOWED_ORIGINS must be set in staging/production.")
-    if not s.database_url or s.database_url.startswith("sqlite"):
-        problems.append("DATABASE_URL must point at Postgres in staging/production.")
+    if not s.database_url:
+        problems.append(DATABASE_URL_MISSING)
+    elif s.database_url.startswith("sqlite"):
+        problems.append(DATABASE_URL_NOT_POSTGRES)
     if s.entitlements_source == "static":
         problems.append("ENTITLEMENTS_SOURCE=static is a dev/test fixture; use marketmosaic.")
     if s.entitlements_source == "marketmosaic" and not s.marketmosaic_base_url:
