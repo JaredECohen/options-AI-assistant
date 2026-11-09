@@ -10,3 +10,6 @@ frontend/dist/
 
 # local container check fixtures
 .container-check/
+
+# local development database (DATABASE_URL in .env.example)
+*.db
