@@ -31,6 +31,7 @@ ENV_VARS: dict[str, tuple[str, str]] = {
     "APP_ENV": ("development | test | staging | production", "all"),
     "DEMO_MODE": ("1 allows synthetic data / heuristic responses outside dev, always labelled", "optional"),
     "PORT": ("HTTP port; Render injects it (default 10000)", "render"),
+    "MIGRATE_ON_START": ("1 makes scripts/start.sh run `alembic upgrade head` before serving (single-instance plans without pre-deploy)", "optional"),
     "LOG_LEVEL": ("INFO by default", "optional"),
     "RELEASE_REVISION": ("deployed revision; falls back to RENDER_GIT_COMMIT", "optional"),
     "PUBLIC_BASE_URL": ("canonical public origin, e.g. https://options.marketmosaic.ai", "prod"),

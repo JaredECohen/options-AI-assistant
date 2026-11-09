@@ -9,6 +9,7 @@ never committed, never logged. `prod` = required in staging and production; `wor
 | `APP_ENV` |  | all | development / test / staging / production |
 | `DEMO_MODE` |  | optional | 1 allows synthetic data / heuristic responses outside dev, always labelled |
 | `PORT` |  | render | HTTP port; Render injects it (default 10000) |
+| `MIGRATE_ON_START` |  | optional | 1 makes scripts/start.sh run `alembic upgrade head` before serving (single-instance plans without pre-deploy) |
 | `LOG_LEVEL` |  | optional | INFO by default |
 | `RELEASE_REVISION` |  | optional | deployed revision; falls back to RENDER_GIT_COMMIT |
 | `PUBLIC_BASE_URL` |  | prod | canonical public origin, e.g. https://options.marketmosaic.ai |
