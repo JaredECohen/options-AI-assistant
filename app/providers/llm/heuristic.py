@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from app.core.safety import SECTION_TITLES
 from app.core.strategies import get_strategy
 
 

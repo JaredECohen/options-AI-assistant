@@ -1,5 +1,5 @@
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 ADVICE_LIKE_PATTERNS = [
     r"\b(best|top|optimal)\s+(trade|strategy)\b",
