@@ -1,10 +1,9 @@
 """Alembic environment. Reads DATABASE_URL; refuses to run without one."""
 from __future__ import annotations
 
-import os
-
 from alembic import context
 
+from app.config import database_url_from_env
 from app.db.models import Base
 from app.db.session import make_engine
 
@@ -12,10 +11,7 @@ target_metadata = Base.metadata
 
 
 def _url() -> str:
-    url = os.getenv("DATABASE_URL", "")
-    if not url:
-        raise RuntimeError("DATABASE_URL is required to run migrations")
-    return url
+    return database_url_from_env()
 
 
 def run_migrations_offline() -> None:

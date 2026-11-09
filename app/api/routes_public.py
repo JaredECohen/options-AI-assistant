@@ -1,6 +1,9 @@
 """Unauthenticated endpoints: liveness, readiness and SPA bootstrap config."""
 from __future__ import annotations
 
+import logging
+import re
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -8,6 +11,9 @@ from sqlalchemy import text
 from app.providers.options.base import DATA_STATUS_LABELS
 
 router = APIRouter()
+log = logging.getLogger("app.ready")
+# Connection strings in driver errors include the database password.
+_SECRET_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
 
 
 @router.get("/health")
@@ -16,11 +22,19 @@ async def health(request: Request):
     return {"status": "ok", "revision": request.app.state.settings.release_revision}
 
 
+def _unavailable(check: str, exc: BaseException) -> str:
+    """Generic client status. The exception class and a redacted message stay in the log."""
+    detail = _SECRET_URL.sub("[redacted]", str(exc)).replace("\n", " ")[:300]
+    log.warning("readiness check %s unavailable (%s): %s", check, type(exc).__name__, detail)
+    return "unavailable"
+
+
 @router.get("/ready")
 def ready(request: Request):
     """Readiness: database reachable and at the expected migration revision.
     External providers are reported but do not fail readiness (their outages
-    surface as controlled 503s on the routes that need them)."""
+    surface as controlled 503s on the routes that need them). Dependency
+    failures return a generic status; exception details are logged, not returned."""
     state = request.app.state
     checks: dict = {}
     ok = True
@@ -28,7 +42,7 @@ def ready(request: Request):
         state.db.ping()
         checks["database"] = "ok"
     except Exception as exc:  # noqa: BLE001
-        checks["database"] = f"error:{exc.__class__.__name__}"
+        checks["database"] = _unavailable("database", exc)
         ok = False
     if ok and not state.settings.database_url.startswith("sqlite"):
         try:
@@ -37,13 +51,13 @@ def ready(request: Request):
             checks["migrations"] = "ok" if current == state.migration_head else f"behind:{current}->{state.migration_head}"
             ok = ok and current == state.migration_head
         except Exception as exc:  # noqa: BLE001
-            checks["migrations"] = f"error:{exc.__class__.__name__}"
+            checks["migrations"] = _unavailable("migrations", exc)
             ok = False
     checks["auth"] = {"enabled": state.settings.auth_enabled, "jwks_loaded": state.jwks.loaded}
     checks["llm"] = state.llm.status()
     provider = state.options_provider
     checks["market_data"] = {"provider": provider.name, "data_status": provider.data_status}
-    body = {"status": "ready" if ok else "not_ready", "revision": state.settings.release_revision, "checks": checks}
+    body = {"status": "ready" if ok else "unavailable", "revision": state.settings.release_revision, "checks": checks}
     return JSONResponse(status_code=200 if ok else 503, content=body)
 
 

@@ -1,10 +1,10 @@
-# Render configuration for OptionsCoach, kept in step with what is deployed.
-# The live resources were created on 2026-11-08 through the Render API (not by
-# applying this file), with the owner's approval: a FREE web service (owner is
-# the only user; cold starts accepted) and a small paid Postgres. Separate from
-# MarketMosaic: own service, own database. Keys follow
-# https://render.com/docs/blueprint-spec.
-# Secrets (sync: false) are entered by the owner in the dashboard, never here.
+# Render Blueprint for OptionsCoach. Separate from MarketMosaic: own service,
+# own database. Keys follow https://render.com/docs/blueprint-spec.
+# The live web service `optionscoach` and Postgres `optionscoach-db` were created
+# through the Render API on 2026-11-09, not by syncing this file. DATABASE_URL
+# below is the intended wiring and is still unset on that service until the
+# blueprint is synced onto the existing resources or the variable is linked in
+# the dashboard. Secrets (sync: false) are entered by the owner, never here.
 
 services:
   - type: web
@@ -18,6 +18,9 @@ services:
     # Free plan: no pre-deploy step, so scripts/start.sh migrates on boot (MIGRATE_ON_START).
     # On a paid plan with >1 instance, use preDeployCommand: alembic upgrade head instead.
     autoDeployTrigger: commit
+    # Liveness only. GET /health does not touch Postgres or paid providers.
+    # GET /ready checks the database and is not the deploy health path.
+    healthCheckPath: /health
     envVars:
       - key: APP_ENV
         value: production
@@ -47,6 +50,8 @@ services:
         sync: false
       - key: OC_SERVICE_TOKEN_HASHES_JSON
         sync: false
+      # Not a literal. Render fills this from optionscoach-db's internal
+      # connection string on blueprint sync. Do not commit that URL.
       - key: DATABASE_URL
         fromDatabase:
           name: optionscoach-db
