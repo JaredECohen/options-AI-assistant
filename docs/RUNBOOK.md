@@ -7,9 +7,9 @@ step. Nothing below has been executed. Commands assume a POSIX shell and absolut
 ## 0. Preconditions (code)
 
 ```bash
-cd /Users/jaredcohen/code/oc-columbia-exit && git log --oneline -5
-cd /Users/jaredcohen/code/oc-columbia-exit && uv sync --frozen && APP_ENV=test .venv/bin/python -m pytest -q
-cd /Users/jaredcohen/code/oc-columbia-exit/frontend && npm ci && npm test && npm run build
+cd /Users/jaredcohen/code/options-AI-assistant && git log --oneline -5
+cd /Users/jaredcohen/code/options-AI-assistant && uv sync --frozen && APP_ENV=test .venv/bin/python -m pytest -q
+cd /Users/jaredcohen/code/options-AI-assistant/frontend && npm ci && npm test && npm run build
 ```
 Review and merge `feat/columbia-exit` (OptionsCoach) and `feat/optionscoach-contracts`
 (MarketMosaic) through normal PRs. MarketMosaic ships first: OptionsCoach's staging needs its

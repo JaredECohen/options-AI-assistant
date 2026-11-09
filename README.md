@@ -11,9 +11,9 @@ entitlements, and its own Postgres. See `docs/` for decisions, contracts and the
 ## Run locally (no accounts needed)
 
 ```bash
-cd /Users/jaredcohen/code/oc-columbia-exit && uv sync --frozen
-cd /Users/jaredcohen/code/oc-columbia-exit/frontend && npm ci && npm run build
-cd /Users/jaredcohen/code/oc-columbia-exit && cp -n .env.example .env && .venv/bin/uvicorn app.main:app_factory --factory --port 8000
+cd /Users/jaredcohen/code/options-AI-assistant && uv sync --frozen
+cd /Users/jaredcohen/code/options-AI-assistant/frontend && npm ci && npm run build
+cd /Users/jaredcohen/code/options-AI-assistant && cp -n .env.example .env && .venv/bin/uvicorn app.main:app_factory --factory --port 8000
 ```
 
 Open http://localhost:8000. Development mode uses **synthetic market data** and **canned answers**,
@@ -23,9 +23,9 @@ to port 8000).
 ## Tests
 
 ```bash
-cd /Users/jaredcohen/code/oc-columbia-exit && .venv/bin/python -m pytest -q
-cd /Users/jaredcohen/code/oc-columbia-exit/frontend && npm test
-cd /Users/jaredcohen/code/oc-columbia-exit && .venv/bin/python eval/run_eval.py
+cd /Users/jaredcohen/code/options-AI-assistant && .venv/bin/python -m pytest -q
+cd /Users/jaredcohen/code/options-AI-assistant/frontend && npm test
+cd /Users/jaredcohen/code/options-AI-assistant && .venv/bin/python eval/run_eval.py
 ```
 
 Tests never touch the network (a socket guard enforces it) or paid APIs. The eval runs offline by
