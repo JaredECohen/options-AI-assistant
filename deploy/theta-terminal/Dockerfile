@@ -1,3 +1,5 @@
+# OPTIONAL: only for THETADATA_ACCESS=terminal. The default transport is ThetaData's
+# Python library, which needs no Terminal.
 # Theta Terminal (ThetaData v3) for Render. UNVERIFIED: written from ThetaData's
 # Getting Started page; it has not been run, because no subscription exists yet.
 # Confirm on first boot (see docs/RUNBOOK.md, "ThetaData"):

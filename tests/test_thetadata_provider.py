@@ -203,3 +203,167 @@ def test_factory_and_config():
     assert not any("OPTIONS" in p for p in validate_for_startup(Settings(**prod, options_provider="thetadata")))
     assert any("OPTIONS_HISTORY_PROVIDER" in p for p in
                validate_for_startup(Settings(**prod, options_provider="tradier", options_history_provider="fmp")))
+
+
+# ---- library transport (ThetaData's Python library; no Terminal) -------------
+import logging  # noqa: E402
+import time as _time  # noqa: E402
+import zoneinfo  # noqa: E402
+
+import polars as pl  # noqa: E402
+
+from app.providers.options.thetadata import _library_client  # noqa: E402
+
+NYZ = zoneinfo.ZoneInfo("America/New_York")
+
+
+class NoDataFoundError(Exception):  # same name as thetadata.errors.NoDataFoundError
+    pass
+
+
+class AuthenticationError(Exception):  # same name as thetadata.errors.AuthenticationError
+    pass
+
+
+class RpcError(Exception):
+    def __init__(self, name):
+        super().__init__(name)
+        self._name = name
+
+    def code(self):
+        return type("Code", (), {"name": self._name})()
+
+
+def lib_rows(rows):
+    return pl.DataFrame(rows)
+
+
+class FakeClient:
+    def __init__(self, responses=None, raises=None, sleep=0.0):
+        self.responses = responses or {}
+        self.raises = raises or {}
+        self.sleep = sleep
+        self.calls: list[tuple[str, dict]] = []
+
+    def __getattr__(self, method):
+        def call(**kwargs):
+            self.calls.append((method, kwargs))
+            if self.sleep:
+                _time.sleep(self.sleep)
+            if method in self.raises:
+                raise self.raises[method]
+            if method not in self.responses:
+                raise NoDataFoundError(method)
+            return lib_rows(self.responses[method])
+        return call
+
+
+def lib_provider(client, **kw):
+    made = []
+
+    def factory():
+        made.append(1)
+        return client
+
+    p = ThetaDataProvider(access="library", client_factory=factory, **kw)
+    return p, made
+
+
+TS = dt.datetime(2026, 11, 6, 15, 59, 59, 805000, tzinfo=NYZ)
+GREEKS_ROWS = [
+    {"symbol": "SPY", "expiration": dt.date(2026, 12, 18), "strike": 600.0, "right": "CALL", "timestamp": TS,
+     "bid": 10.1, "ask": 10.3, "delta": 0.52, "theta": "-0.0217", "vega": 26.3, "rho": 9.1, "implied_vol": 0.18,
+     "underlying_price": 600.5},
+    {"symbol": "SPY", "expiration": dt.date(2026, 12, 18), "strike": 600.0, "right": "PUT", "timestamp": TS,
+     "bid": float("nan"), "ask": 9.2, "delta": -0.48, "theta": "-0.02", "vega": 26.0, "rho": -9.0,
+     "implied_vol": 0.19, "underlying_price": 600.5},
+]
+
+
+async def test_library_chain_parses_dataframes_and_passes_dates():
+    client = FakeClient({"option_snapshot_greeks_first_order": GREEKS_ROWS,
+                         "option_snapshot_open_interest": [{"expiration": dt.date(2026, 12, 18), "strike": 600.0,
+                                                            "right": "CALL", "open_interest": 8066, "timestamp": TS}]})
+    p, made = lib_provider(client)
+    call, put = await p.get_chain("SPY", EXP)
+    assert call.bid == 10.1 and call.greeks.theta == -0.0217 and call.open_interest == 8066
+    assert call.quote_time == "2026-11-06T15:59:59.805000-05:00" and call.symbol == "SPY   261218C00600000"
+    assert put.bid is None and put.mark is None  # NaN price from the library is not a price
+    assert _num_noise_free()
+    method, kwargs = next(c for c in client.calls if c[0] == "option_snapshot_greeks_first_order")
+    assert kwargs == {"symbol": "SPY", "expiration": dt.date(2026, 12, 18)}
+    await p.get_chain("SPY", EXP)
+    assert made == [1]  # signed in once, reused
+
+
+async def test_library_history_kwargs_and_rows():
+    rows = [{"symbol": "SPY", "expiration": dt.date(2026, 12, 18), "strike": 600.0, "right": "put",
+             "timestamp": dt.datetime(2026, 11, 5, 17, 15, tzinfo=NYZ), "bid": 9.0, "ask": 9.2,
+             "underlying_price": 600.5}]
+    client = FakeClient({"option_history_greeks_eod": rows})
+    p, _ = lib_provider(client)
+    (r,) = await p.get_eod_options("SPY", EXP, dt.date(2026, 11, 5), dt.date(2026, 11, 6))
+    assert (r.date, r.option_type, r.bid, r.underlying_price) == (dt.date(2026, 11, 5), "put", 9.0, 600.5)
+    _m, kwargs = client.calls[0]
+    assert kwargs == {"symbol": "SPY", "expiration": dt.date(2026, 12, 18), "strike_range": 40,
+                      "start_date": dt.date(2026, 11, 5), "end_date": dt.date(2026, 11, 6)}
+
+
+async def test_library_errors_map_to_the_provider_contract():
+    quote_rows = [{k: v for k, v in GREEKS_ROWS[0].items() if k in ("expiration", "strike", "right", "bid", "ask", "timestamp")}]
+    c = FakeClient({"option_snapshot_quote": quote_rows},
+                   raises={"option_snapshot_greeks_first_order": RpcError("PERMISSION_DENIED")})
+    (q,) = (await lib_provider(c)[0].get_chain("SPY", EXP))
+    assert q.greeks is None and q.bid == 10.1  # Value-tier fallback works through the library too
+    assert await lib_provider(FakeClient())[0].get_eod_options("SPY", EXP, dt.date(2026, 11, 5),
+                                                                dt.date(2026, 11, 5)) == []
+    for err, exc in [(RpcError("UNAVAILABLE"), ProviderUnavailable), (RpcError("INVALID_ARGUMENT"), QuoteUnavailable),
+                     (AuthenticationError("bad"), ProviderUnavailable), (RuntimeError("boom"), ProviderUnavailable)]:
+        with pytest.raises(exc):
+            await lib_provider(FakeClient(raises={"option_list_expirations": err}))[0].list_expirations_all("SPY")
+
+
+async def test_expired_session_signs_in_again():
+    client = FakeClient(raises={"option_list_expirations": RpcError("UNAUTHENTICATED")})
+    p, made = lib_provider(client)
+    with pytest.raises(ProviderUnavailable, match="sign in again"):
+        await p.list_expirations_all("SPY")
+    client.raises.clear()
+    client.responses["option_list_expirations"] = [{"symbol": "SPY", "expiration": dt.date(2099, 1, 15)}]
+    assert await p.list_expirations_all("SPY") == ["2099-01-15"]
+    assert made == [1, 1]
+
+
+async def test_library_timeout_is_provider_unavailable():
+    p, _ = lib_provider(FakeClient({"option_list_expirations": []}, sleep=0.3), timeout_seconds=0.05)
+    with pytest.raises(ProviderUnavailable, match="in time"):
+        await p.list_expirations_all("SPY")
+
+
+def test_library_client_requires_credentials_and_silences_its_logger():
+    logging.getLogger("thetadata").setLevel(logging.INFO)
+    with pytest.raises(ProviderUnavailable, match="not configured"):
+        _library_client("", "", "")
+    assert logging.getLogger("thetadata").level == logging.WARNING  # its INFO line carries the session id
+
+
+def test_library_settings_validation_and_redaction():
+    prod = dict(app_env="production", auth_enabled=True, clerk_issuer="i", clerk_jwks_url="j",
+                clerk_authorized_parties=("https://x",), allowed_origins=("https://x",),
+                database_url="postgresql://x/y", marketmosaic_base_url="https://mm", anthropic_api_key="k")
+    missing = validate_for_startup(Settings(**prod, options_provider="thetadata"))
+    assert any("THETADATA_EMAIL" in m for m in missing)
+    ok = Settings(**prod, options_provider="tradier", options_history_provider="thetadata",
+                  thetadata_email="me@example.com", thetadata_password="hunter2")
+    assert not any("THETADATA" in m or "OPTIONS" in m for m in validate_for_startup(ok))
+    assert "hunter2" not in repr(ok) and "me@example.com" not in repr(ok)
+    red = ok.redacted()
+    assert red["thetadata_password"] == "set" and red["thetadata_api_key"] == "unset"
+    p = build_history_provider(ok)
+    assert p.access == "library"
+    assert any("THETADATA_ACCESS" in m for m in validate_for_startup(Settings(**prod, thetadata_access="cloud")))
+
+
+def _num_noise_free() -> bool:
+    from app.providers.options.thetadata import _num
+    return _num(30.110000000000003) == 30.11 and _num(0.000123456789) == 0.00012346 and _num(float("nan")) is None

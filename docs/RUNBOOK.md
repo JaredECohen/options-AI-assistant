@@ -85,32 +85,29 @@ Review and merge `feat/columbia-exit` (OptionsCoach) and `feat/optionscoach-cont
 
 Follow `docs/GOOGLE_EXIT.md` § Decommission. Do not delete before confirming export/retention terms.
 
-## 7. ThetaData (optional; IV rank, history, live chains)
+## 7. ThetaData (IV rank, history, live chains)
 
-The owner buys an Options **Standard** plan ($80/mo). Value has no greeks, IV or EOD greeks history. The
-individual licence covers personal use only. Commands work from any directory.
+The owner has an Options **Standard** plan ($80/mo). The individual licence covers personal use only.
+OptionsCoach uses ThetaData's official Python library (`thetadata`), which signs in with the account email
+and password and fetches directly from ThetaData. **No Theta Terminal is needed.** Commands work from any directory.
 
-1. **Local first contact.** Install Java 21+ and download the Terminal from the official link on
-   thetadata.net/docs (Getting Started). Put the API key in a `.env` beside the jar
-   (`THETADATA_API_KEY=...`, never committed), then start it:
-   `cd ~/theta && java -jar ThetaTerminalv3.jar`
-2. **Smoke check.** Run:
-   `cd /Users/jaredcohen/code/options-AI-assistant && THETADATA_BASE_URL=http://127.0.0.1:25503 .venv/bin/python scripts/thetadata_smoke.py SPY`
-   Every step should report `"ok": true`, and `get_chain.with_iv` should be non-zero. A failed step means a
-   response-shape difference: fix it in `thetadata.py`, add the live shape as a fixture, and re-run.
-   While the Terminal runs, note the config file it writes beside the jar (its name, and the `host` key).
-3. **Render.** Choose a topology. Both are UNVERIFIED until step 2 passes:
-   - **A. Private service `theta-terminal`.** Build from `deploy/theta-terminal/Dockerfile` on a paid plan (private
-     services are not free), with the `THETADATA_API_KEY` secret. Set its `host` to 0.0.0.0, using the file seen in
-     step 2. On OptionsCoach web, set `OPTIONS_PROVIDER=thetadata` (or keep tradier),
-     `OPTIONS_HISTORY_PROVIDER=thetadata`, `THETADATA_BASE_URL=http://<internal hostname>:25503`,
-     `THETADATA_DATA_STATUS=live` (paid tiers are real-time), and `THETADATA_MAX_CONCURRENCY=4`. A free web
-     service may call paid private services in the same region.
-   - **B. Same container as the caller.** This avoids host binding and the single-client-IP rule (476), but needs
-     Java in the image and more memory than the free plan's 512 MB.
-4. **Backfill IV history.** Wherever the Terminal is reachable and `DATABASE_URL` points at OptionsCoach's database:
+1. **Smoke check (local).** Put the credentials in your shell environment only, never in a file in the repo:
+   `cd /Users/jaredcohen/code/options-AI-assistant && read -r "THETADATA_EMAIL?Email: " && read -rs "THETADATA_PASSWORD?Password: " && export THETADATA_EMAIL THETADATA_PASSWORD && .venv/bin/python scripts/thetadata_smoke.py SPY`
+   Every step should report `"ok": true`, and `get_chain.with_iv` should be non-zero. If a step fails because the
+   live data has a different shape, fix it in `thetadata.py` and add the live shape as a fixture.
+2. **Render (OptionsCoach web service).** The owner enters the secrets `THETADATA_EMAIL` and `THETADATA_PASSWORD`
+   (or `THETADATA_API_KEY`). Then set:
+   - `OPTIONS_HISTORY_PROVIDER=thetadata`, which enables the IV backfill;
+   - optionally `OPTIONS_PROVIDER=thetadata`, which serves live chains from ThetaData instead of Tradier;
+   - `THETADATA_DATA_STATUS=live` (paid tiers are real-time);
+   - `THETADATA_MAX_CONCURRENCY=4` (the Standard plan's limit).
+   The library adds about 21 MB of memory when in use, which fits the free plan.
+3. **Backfill IV history.** This needs `DATABASE_URL` for OptionsCoach's database. Run it from a Render shell or worker,
+   or from your Mac with a temporary database IP allow-list entry:
    `cd /Users/jaredcohen/code/options-AI-assistant && .venv/bin/python -m app.jobs.backfill_cli SPY QQQ --days 365`
-   A worker with `ENABLE_SCHEDULER=1` and `INGEST_UNIVERSE` set does this by itself: one full year per ticker, then
-   a nightly one-week top-up.
-5. **Rollback.** Unset `OPTIONS_PROVIDER` (Tradier remains the default) and `OPTIONS_HISTORY_PROVIDER`.
-   Stored `iv_daily` rows stay valid, because the method is the same whichever provider supplied the quotes.
+   A worker with `ENABLE_SCHEDULER=1` and `INGEST_UNIVERSE` set does this by itself: a full year once per ticker,
+   then a nightly one-week top-up.
+4. **Terminal alternative.** `THETADATA_ACCESS=terminal` with `THETADATA_BASE_URL` uses a running Theta Terminal instead.
+   `deploy/theta-terminal/Dockerfile` is kept for that case and is unverified.
+5. **Rollback.** Unset `OPTIONS_PROVIDER` (Tradier remains the default) and `OPTIONS_HISTORY_PROVIDER`. Stored
+   `iv_daily` rows stay valid, because the method is the same whichever provider supplied the quotes.

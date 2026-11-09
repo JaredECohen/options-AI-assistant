@@ -71,6 +71,13 @@ services:
         value: production          # sandbox if the token is a Tradier sandbox token
       - key: TRADIER_DATA_STATUS
         value: delayed            # change only after the entitlement is confirmed in writing
+      # ThetaData through its Python library (no Terminal). The owner enters the secrets in the dashboard.
+      - key: THETADATA_EMAIL
+        sync: false
+      - key: THETADATA_PASSWORD
+        sync: false
+      # - key: OPTIONS_HISTORY_PROVIDER   # enable once the smoke check passes (RUNBOOK section 7)
+      #   value: thetadata
       - key: RESEARCH_INTEGRATION_ENABLED
         value: "true"             # MarketMosaic /api/v1 shipped 2026-11-08 (PR #138)
 

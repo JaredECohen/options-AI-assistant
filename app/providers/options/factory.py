@@ -38,7 +38,9 @@ def build_options_provider(settings: Settings) -> OptionsDataProvider:
 def _thetadata(settings: Settings) -> ThetaDataProvider:
     return ThetaDataProvider(base_url=settings.thetadata_base_url, data_status=settings.thetadata_data_status,
                              timeout_seconds=settings.thetadata_timeout_seconds,
-                             max_concurrency=settings.thetadata_max_concurrency)
+                             max_concurrency=settings.thetadata_max_concurrency, access=settings.thetadata_access,
+                             email=settings.thetadata_email, password=settings.thetadata_password,
+                             api_key=settings.thetadata_api_key)
 
 
 def build_history_provider(settings: Settings) -> ThetaDataProvider | None:

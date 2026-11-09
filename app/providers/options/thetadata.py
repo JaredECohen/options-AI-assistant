@@ -1,8 +1,14 @@
-"""ThetaData (v3) options adapter, served by the locally running Theta Terminal.
+"""ThetaData (v3) options adapter.
 
-Written from ThetaData's official v3 docs and OpenAPI file (2026-11-08) and
-exercised only against fixtures in the documented shapes. It has not met a live
-Terminal; re-check the response shape against one before relying on it.
+Two transports, same parsing:
+- "library" (default): ThetaData's official Python library (`thetadata`), which
+  signs in with the account email/password (or an API key) and fetches over
+  gRPC from ThetaData's servers. No Terminal process is needed.
+- "terminal": the Theta Terminal's local REST server (http://127.0.0.1:25503).
+
+Written from ThetaData's v3 docs, OpenAPI file and the library's source
+(thetadata 1.0.17), and exercised against fixtures only; run
+scripts/thetadata_smoke.py against the live service before relying on it.
 
 Documented facts this relies on (thetadata.net/docs):
 - Base http://127.0.0.1:25503, GET only. `format=json` must be explicit (CSV is
@@ -31,8 +37,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 import math
 import re
+import threading
+from collections.abc import Callable
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -63,7 +72,9 @@ def _num(value: Any) -> float | None:
         out = float(value)
     except (TypeError, ValueError):
         return None
-    return out if math.isfinite(out) else None
+    # The library rebuilds prices as integer x scale factor, so 30.11 arrives as
+    # 30.110000000000003; 8 decimals removes that noise without touching real digits.
+    return round(out, 8) if math.isfinite(out) else None
 
 
 def _int(value: Any) -> int | None:
@@ -130,16 +141,75 @@ def flatten(body: Any) -> list[dict]:
     return out
 
 
+def _library_client(email: str, password: str, api_key: str):
+    """Sign in with ThetaData's library. Its logger prints the whole sign-in
+    response (including the session id) at INFO, so it is held at WARNING."""
+    logging.getLogger("thetadata").setLevel(logging.WARNING)
+    if not (api_key or (email and password)):
+        raise ProviderUnavailable("ThetaData is not configured (THETADATA_EMAIL and THETADATA_PASSWORD, or THETADATA_API_KEY).")
+    from thetadata import ThetaClient  # imported only when ThetaData is in use (pulls in grpc, polars)
+
+    if api_key:
+        return ThetaClient(api_key=api_key, dataframe_type="polars")
+    return ThetaClient(email=email, password=password, dataframe_type="polars")
+
+
+def _as_date(value: str) -> dt.date | str:
+    if value == "*":
+        return value
+    return dt.datetime.strptime(value, "%Y%m%d").date()
+
+
+def _library_call(path: str, p: dict) -> tuple[str, dict]:
+    """Translate a v3 REST path + params into the equivalent library method call."""
+    sym = p["symbol"]
+    def opt(extra=()):
+        kw = {"symbol": sym, "expiration": _as_date(p["expiration"])}
+        for k in ("max_dte", "strike_range", *extra):
+            if k in p:
+                kw[k] = int(p[k])
+        return kw
+    def hist():
+        kw = opt()
+        kw.update(start_date=_as_date(p["start_date"]), end_date=_as_date(p["end_date"]))
+        return kw
+    table: dict[str, tuple[str, Callable[[], dict]]] = {
+        "/v3/stock/snapshot/quote": ("stock_snapshot_quote", lambda: {"symbol": [sym]}),
+        "/v3/stock/history/eod": ("stock_history_eod", lambda: {
+            "symbol": sym, "start_date": _as_date(p["start_date"]), "end_date": _as_date(p["end_date"])}),
+        "/v3/option/list/expirations": ("option_list_expirations", lambda: {"symbol": sym}),
+        "/v3/option/snapshot/greeks/first_order": ("option_snapshot_greeks_first_order", opt),
+        "/v3/option/snapshot/greeks/implied_volatility": ("option_snapshot_greeks_implied_volatility", opt),
+        "/v3/option/snapshot/quote": ("option_snapshot_quote", opt),
+        "/v3/option/snapshot/open_interest": ("option_snapshot_open_interest", opt),
+        "/v3/option/snapshot/ohlc": ("option_snapshot_ohlc", opt),
+        "/v3/option/history/greeks/eod": ("option_history_greeks_eod", hist),
+        "/v3/option/history/eod": ("option_history_eod", hist),
+    }
+    if path not in table:
+        raise QuoteUnavailable(f"no library mapping for {path}")
+    method, build = table[path]
+    return method, build()
+
+
 class ThetaDataProvider:
     name = "thetadata"
     max_history_range_days = 28  # ThetaData's sizing guide: about one month of EOD per request
 
     def __init__(self, base_url: str | None = None, data_status: str = "delayed", timeout_seconds: float = 15.0,
-                 max_concurrency: int = 2, transport: httpx.AsyncBaseTransport | None = None):
+                 max_concurrency: int = 2, transport: httpx.AsyncBaseTransport | None = None,
+                 access: str = "terminal", email: str = "", password: str = "", api_key: str = "",
+                 client_factory: Callable[[], object] | None = None):
         status = (data_status or "delayed").lower()
         if status not in _ALLOWED_STATUS:
             raise ValueError(f"THETADATA_DATA_STATUS must be one of {sorted(_ALLOWED_STATUS)}")
+        if access not in ("library", "terminal"):
+            raise ValueError("THETADATA_ACCESS must be library or terminal")
+        self.access = access
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        self._client_factory = client_factory or (lambda: _library_client(email, password, api_key))
+        self._client = None
+        self._client_lock = threading.Lock()
         self.data_status = status
         self._timeout = timeout_seconds
         self._transport = transport
@@ -160,6 +230,61 @@ class ThetaDataProvider:
         return t
 
     async def _get(self, path: str, params: dict) -> list[dict]:
+        if self.access == "library":
+            return await self._get_library(path, params)
+        return await self._get_terminal(path, params)
+
+    # ---- library transport ---------------------------------------------------
+    def _library(self):
+        with self._client_lock:  # sign in once, lazily, off the event loop
+            if self._client is None:
+                self._client = self._client_factory()
+            return self._client
+
+    def _call_library(self, path: str, params: dict) -> list[dict]:
+        method, kwargs = _library_call(path, params)
+        try:
+            frame = getattr(self._library(), method)(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - mapped to the provider contract below
+            raise self._map_library_error(exc) from exc
+        if hasattr(frame, "to_dicts"):  # polars
+            return frame.to_dicts()
+        if hasattr(frame, "to_dict"):  # pandas
+            return frame.to_dict("records")
+        return list(frame or [])
+
+    def _map_library_error(self, exc: Exception) -> Exception:
+        if isinstance(exc, (ProviderUnavailable, QuoteUnavailable)):
+            return exc
+        kind = type(exc).__name__
+        if kind == "NoDataFoundError":
+            return NoData("ThetaData has no data for this request.")
+        if kind == "AuthenticationError":
+            return ProviderUnavailable("ThetaData sign-in failed (check THETADATA_EMAIL/PASSWORD or API key).")
+        code = getattr(exc, "code", None)
+        name = getattr(code(), "name", "") if callable(code) else ""
+        if name == "PERMISSION_DENIED":
+            return PermissionDenied("ThetaData subscription does not include this data.")
+        if name == "UNAUTHENTICATED":
+            with self._client_lock:
+                self._client = None  # sign in again on the next request
+            return ProviderUnavailable("ThetaData session expired; it will sign in again.")
+        if name == "INVALID_ARGUMENT":
+            return QuoteUnavailable("ThetaData rejected the request parameters.")
+        if name:
+            return ProviderUnavailable(f"ThetaData returned {name}.")
+        return ProviderUnavailable(f"ThetaData request failed ({kind}).")
+
+    async def _get_library(self, path: str, params: dict) -> list[dict]:
+        async with self._sem:
+            self.requests += 1
+            try:
+                return await asyncio.wait_for(asyncio.to_thread(self._call_library, path, params), self._timeout)
+            except TimeoutError as exc:
+                raise ProviderUnavailable("ThetaData did not answer in time.") from exc
+
+    # ---- terminal transport --------------------------------------------------
+    async def _get_terminal(self, path: str, params: dict) -> list[dict]:
         params = {**params, "format": "json"}
         async with self._sem:
             self.requests += 1
