@@ -1,6 +1,9 @@
-"""First-contact check against a running Theta Terminal (run once after subscribing).
+"""First-contact check against ThetaData (run once with a subscription).
 
-    THETADATA_BASE_URL=http://127.0.0.1:25503 python scripts/thetadata_smoke.py SPY
+    # library (default): reads THETADATA_EMAIL / THETADATA_PASSWORD (or THETADATA_API_KEY) from the environment
+    python scripts/thetadata_smoke.py SPY
+    # terminal: a running Theta Terminal
+    THETADATA_ACCESS=terminal THETADATA_BASE_URL=http://127.0.0.1:25503 python scripts/thetadata_smoke.py SPY
 
 The adapter was written from ThetaData's documentation and tested on fixtures
 only. This makes a handful of real requests (no per-request charge on
@@ -23,8 +26,11 @@ from app.providers.options.thetadata import ThetaDataProvider  # noqa: E402
 
 
 async def check(ticker: str) -> dict:
-    p = ThetaDataProvider(base_url=os.getenv("THETADATA_BASE_URL"), data_status="delayed", max_concurrency=2)
-    report: dict = {"ticker": ticker, "base_url": p.base_url}
+    access = os.getenv("THETADATA_ACCESS", "library")
+    p = ThetaDataProvider(base_url=os.getenv("THETADATA_BASE_URL"), data_status="delayed", max_concurrency=2,
+                          timeout_seconds=60.0, access=access, email=os.getenv("THETADATA_EMAIL", ""),
+                          password=os.getenv("THETADATA_PASSWORD", ""), api_key=os.getenv("THETADATA_API_KEY", ""))
+    report: dict = {"ticker": ticker, "access": access}
 
     async def step(name, coro, summarize):
         try:

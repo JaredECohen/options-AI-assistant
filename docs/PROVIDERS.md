@@ -56,9 +56,15 @@ interactivebrokers.com market-data pricing pages.
 
 ## ThetaData adapter (2026-11-08)
 
-Implemented in `app/providers/options/thetadata.py` from the v3 docs and OpenAPI file; tested only
-against fixtures in the documented shapes (`tests/test_thetadata_provider.py`). Not yet run against
-a live Terminal: after subscribing, run `scripts/thetadata_smoke.py` once.
+Implemented in `app/providers/options/thetadata.py` from the v3 docs, the OpenAPI file and the source of
+ThetaData's Python library (`thetadata` 1.0.17). It is tested only against fixtures: library dataframes and REST
+shapes in `tests/test_thetadata_provider.py`.
+
+- **Default transport (`THETADATA_ACCESS=library`):** the official library signs in with email/password (or an API key) at
+  `nexus-api.thetadata.us` and fetches over gRPC from `mdds-01.thetadata.us:443`. No Terminal is needed. The library's
+  logger prints the sign-in response, including the session id, at INFO, so the adapter holds that logger at WARNING.
+- **`THETADATA_ACCESS=terminal`:** the local Theta Terminal REST server.
+- **First live run:** `scripts/thetadata_smoke.py` (RUNBOOK §7).
 
 - **Live:** `OPTIONS_PROVIDER=thetadata`. Chains use `snapshot/greeks/first_order` (Standard), falling back
   to `snapshot/quote` without greeks on Value; open interest and volume come from two more Value-tier
@@ -68,5 +74,5 @@ a live Terminal: after subscribing, run `scripts/thetadata_smoke.py` once.
   same model-IV method as daily ingestion, so IV rank and IV percentile become available right away.
   It costs about one request per expiry that brackets 30 days (roughly 60 to 80 per ticker-year for weeklies).
 - **Licence:** suitable while the owner is the only user. Anyone else seeing ThetaData-derived values needs the Business plan.
-- **Operational unknowns** (not documented by ThetaData): the config key that binds the Terminal to a non-local
-  host, its memory needs, and whether one Terminal tolerates more than one client IP (error 476 WRONG_IP).
+- **Terminal-only unknowns** (not documented by ThetaData): which config key binds the Terminal to a non-local host, its
+  memory needs, and whether it accepts more than one client IP (error 476). None of these apply to the library transport.

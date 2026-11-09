@@ -49,7 +49,11 @@ never committed, never logged. `prod` = required in staging and production; `wor
 | `TRADIER_API_TOKEN` | yes | prod | Tradier market-data token (secret) |
 | `TRADIER_ENV` |  | optional | production / sandbox |
 | `TRADIER_DATA_STATUS` |  | optional | live / delayed / eod as entitled; default delayed |
-| `THETADATA_BASE_URL` |  | optional | Theta Terminal v3 REST base, default http://127.0.0.1:25503 |
+| `THETADATA_ACCESS` |  | optional | library (default: ThetaData Python library, direct to ThetaData) / terminal (local Theta Terminal REST) |
+| `THETADATA_EMAIL` | yes | optional | ThetaData account email for the library (secret) |
+| `THETADATA_PASSWORD` | yes | optional | ThetaData account password for the library (secret) |
+| `THETADATA_API_KEY` | yes | optional | ThetaData API key; used instead of email/password when set (secret) |
+| `THETADATA_BASE_URL` |  | optional | terminal access only: Theta Terminal v3 REST base, default http://127.0.0.1:25503 |
 | `THETADATA_DATA_STATUS` |  | optional | live / delayed / eod as entitled; default delayed |
 | `THETADATA_TIMEOUT_SECONDS` |  | optional | per request, default 15 |
 | `THETADATA_MAX_CONCURRENCY` |  | optional | in-flight requests to the Terminal; Value 2, Standard 4, Pro 8 (default 2) |

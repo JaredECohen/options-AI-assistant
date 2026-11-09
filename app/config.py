@@ -22,6 +22,9 @@ SECRET_VARS = {
     "DATABASE_URL",
     "ANTHROPIC_API_KEY",
     "TRADIER_API_TOKEN",
+    "THETADATA_EMAIL",
+    "THETADATA_PASSWORD",
+    "THETADATA_API_KEY",
     "MARKETMOSAIC_SERVICE_TOKEN",
     "OC_SERVICE_TOKEN_HASHES_JSON",
 }
@@ -71,7 +74,11 @@ ENV_VARS: dict[str, tuple[str, str]] = {
     "TRADIER_API_TOKEN": ("Tradier market-data token (secret)", "prod"),
     "TRADIER_ENV": ("production | sandbox", "optional"),
     "TRADIER_DATA_STATUS": ("live | delayed | eod as entitled; default delayed", "optional"),
-    "THETADATA_BASE_URL": ("Theta Terminal v3 REST base, default http://127.0.0.1:25503", "optional"),
+    "THETADATA_ACCESS": ("library (default: ThetaData Python library, direct to ThetaData) | terminal (local Theta Terminal REST)", "optional"),
+    "THETADATA_EMAIL": ("ThetaData account email for the library (secret)", "optional"),
+    "THETADATA_PASSWORD": ("ThetaData account password for the library (secret)", "optional"),
+    "THETADATA_API_KEY": ("ThetaData API key; used instead of email/password when set (secret)", "optional"),
+    "THETADATA_BASE_URL": ("terminal access only: Theta Terminal v3 REST base, default http://127.0.0.1:25503", "optional"),
     "THETADATA_DATA_STATUS": ("live | delayed | eod as entitled; default delayed", "optional"),
     "THETADATA_TIMEOUT_SECONDS": ("per request, default 15", "optional"),
     "THETADATA_MAX_CONCURRENCY": ("in-flight requests to the Terminal; Value 2, Standard 4, Pro 8 (default 2)", "optional"),
@@ -154,6 +161,10 @@ class Settings:
     llm_circuit_cooldown_seconds: float = 60.0
     options_provider: str = "mock"
     tradier_data_status: str = "delayed"
+    thetadata_access: str = "library"
+    thetadata_email: str = field(default="", repr=False)
+    thetadata_password: str = field(default="", repr=False)
+    thetadata_api_key: str = field(default="", repr=False)
     thetadata_base_url: str = "http://127.0.0.1:25503"
     thetadata_data_status: str = "delayed"
     thetadata_timeout_seconds: float = 15.0
@@ -179,7 +190,8 @@ class Settings:
         out = {}
         for f in fields(self):
             value = getattr(self, f.name)
-            if f.name in {"database_url", "anthropic_api_key", "marketmosaic_service_token", "service_token_hashes"}:
+            if f.name in {"database_url", "anthropic_api_key", "marketmosaic_service_token", "service_token_hashes",
+                          "thetadata_email", "thetadata_password", "thetadata_api_key"}:
                 out[f.name] = "set" if value else "unset"
             else:
                 out[f.name] = value
@@ -241,6 +253,10 @@ def load_settings() -> Settings:
         llm_circuit_cooldown_seconds=_float("LLM_CIRCUIT_COOLDOWN_SECONDS", 60.0),
         options_provider=os.getenv("OPTIONS_PROVIDER", "mock" if is_dev else "tradier").lower(),
         tradier_data_status=os.getenv("TRADIER_DATA_STATUS", "delayed").lower(),
+        thetadata_access=os.getenv("THETADATA_ACCESS", "library").lower(),
+        thetadata_email=os.getenv("THETADATA_EMAIL", ""),
+        thetadata_password=os.getenv("THETADATA_PASSWORD", ""),
+        thetadata_api_key=os.getenv("THETADATA_API_KEY", ""),
         thetadata_base_url=os.getenv("THETADATA_BASE_URL", "http://127.0.0.1:25503").rstrip("/"),
         thetadata_data_status=os.getenv("THETADATA_DATA_STATUS", "delayed").lower(),
         thetadata_timeout_seconds=_float("THETADATA_TIMEOUT_SECONDS", 15.0),
@@ -294,6 +310,12 @@ def validate_for_startup(s: Settings) -> list[str]:
         problems.append("ENTITLEMENTS_SOURCE=marketmosaic requires MARKETMOSAIC_BASE_URL.")
     if s.options_provider not in ("tradier", "thetadata", "mock"):
         problems.append("OPTIONS_PROVIDER must be tradier, thetadata or mock.")
+    if s.thetadata_access not in ("library", "terminal"):
+        problems.append("THETADATA_ACCESS must be library or terminal.")
+    uses_theta = "thetadata" in (s.options_provider, s.options_history_provider)
+    if uses_theta and s.thetadata_access == "library" and not (
+            s.thetadata_api_key or (s.thetadata_email and s.thetadata_password)):
+        problems.append("ThetaData via the library needs THETADATA_EMAIL and THETADATA_PASSWORD (or THETADATA_API_KEY).")
     if s.options_history_provider not in ("", "thetadata"):
         problems.append("OPTIONS_HISTORY_PROVIDER must be thetadata or unset.")
     if s.options_provider == "mock" and not s.demo_mode:
