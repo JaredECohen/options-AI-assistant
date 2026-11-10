@@ -504,3 +504,23 @@ async def test_todays_expiration_drops_out_after_the_close():
     ny = zoneinfo.ZoneInfo("America/New_York")
     assert await p.list_expirations("SPY", now=dt.datetime(2026, 11, 9, 15, 0, tzinfo=ny)) == ["2026-11-09", "2026-11-10"]
     assert await p.list_expirations("SPY", now=dt.datetime(2026, 11, 9, 20, 0, tzinfo=ny)) == ["2026-11-10"]
+
+
+async def test_daily_bars_split_ranges_over_the_vendors_365_day_limit():
+    # Regression: ISSUE-011. Analytics asked for 400 days in one request; ThetaData refused
+    # ("max 365 days allowed") and every HV figure read "no price history".
+    seen = []
+
+    class Bars(FakeClient):
+        def __getattr__(self, method):
+            def call(**kw):
+                seen.append((kw["start_date"], kw["end_date"]))
+                assert (kw["end_date"] - kw["start_date"]).days <= 365
+                return lib_rows([{"symbol": "SPY", "close": 700.0 + len(seen),
+                                  "last_trade": dt.datetime.combine(kw["end_date"], dt.time(16), NYZ)}])
+            return call
+
+    p, _ = lib_provider(Bars())
+    bars = await p.get_daily_bars("SPY", dt.date(2025, 10, 5), dt.date(2026, 11, 9))
+    assert len(seen) == 2 and seen[0][1] + dt.timedelta(days=1) == seen[1][0]
+    assert [d for d, _c in bars] == [seen[0][1], dt.date(2026, 11, 9)]

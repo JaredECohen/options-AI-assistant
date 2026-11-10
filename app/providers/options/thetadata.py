@@ -55,6 +55,7 @@ log = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "http://127.0.0.1:25503"
 TRANSIENT_ATTEMPTS = 3  # live 2026-11-09: identical snapshot calls alternated between 0.1 s success and a 10 s failure
 PRICE_MEMORY_SECONDS = 15 * 60
+STOCK_HISTORY_MAX_DAYS = 365  # vendor limit on end - start for stock EOD history
 SESSION_CLOSE = dt.time(16, 15)  # index ETFs such as SPY trade options until 16:15 ET
 
 
@@ -481,11 +482,20 @@ class ThetaDataProvider:
 
     # ---- history -----------------------------------------------------------
     async def get_daily_bars(self, ticker: str, start: dt.date, end: dt.date) -> list[tuple[dt.date, float]]:
-        try:
-            rows = await self._get("/v3/stock/history/eod", {"symbol": self._symbol(ticker),
-                                                              "start_date": f"{start:%Y%m%d}", "end_date": f"{end:%Y%m%d}"})
-        except (PermissionDenied, NoData):
-            return []
+        # ThetaData refuses ranges over 365 days ("Too many days between start and end
+        # date; max 365 days allowed"); analytics asks for 400 so HV252 has a full window.
+        rows: list[dict] = []
+        lo = start
+        while lo <= end:
+            hi = min(lo + dt.timedelta(days=STOCK_HISTORY_MAX_DAYS), end)
+            try:
+                rows += await self._get("/v3/stock/history/eod", {"symbol": self._symbol(ticker),
+                                                                  "start_date": f"{lo:%Y%m%d}", "end_date": f"{hi:%Y%m%d}"})
+            except NoData:
+                pass
+            except PermissionDenied:
+                return []
+            lo = hi + dt.timedelta(days=1)
         out = {}
         for r in rows:
             day = _day(r.get("last_trade") or r.get("created") or r.get("timestamp") or r.get("date"))
