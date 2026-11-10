@@ -9,7 +9,7 @@ from app.analytics.chain import AnalyticsConfig, enrich_chain, skew_25d
 from app.analytics.compare import TickerSnapshot, compare
 from app.analytics.surface import ExpirySlice, build_surface
 from app.analytics.vol import Metric
-from app.api.routes_market import freshness
+from app.api.routes_market import atm_strike, centered_window, freshness
 from app.providers.options.base import OptionQuote
 from tests.helpers import auth, client
 
@@ -29,6 +29,52 @@ def test_chain_is_paged_labelled_and_never_real_time_for_mock(tmp_path):
     assert page2["chain"][0]["strike"] > r["chain"][-1]["strike"]
     puts = c.get(f"/api/chain?ticker=SPY&expiration={exp}&side=put&page_size=5", headers=auth(keys)).json()
     assert all("call" not in row for row in puts["chain"])
+
+
+def test_chain_centred_on_atm_with_strikes_each_side(tmp_path):
+    c, keys = client(tmp_path)
+    exp = c.get("/api/expirations?ticker=SPY", headers=auth(keys)).json()["expirations"][0]
+    spot = c.get("/api/quote?ticker=SPY", headers=auth(keys)).json()["price"]
+    r = c.get(f"/api/chain?ticker=SPY&expiration={exp}&strikes=3", headers=auth(keys)).json()
+    ks = [row["strike"] for row in r["chain"]]
+    assert len(ks) == 7 and ks == sorted(ks)
+    assert r["atm_strike"] == min(ks, key=lambda k: abs(k - spot)) and ks[3] == r["atm_strike"]
+    assert r["atm_basis"] == "underlying" and r["strikes_each_side"] == 3
+    assert r["more_below"] is True and r["more_above"] is True and r["has_more"] is True
+    assert r["total_strikes"] == 21 and all({"call", "put"} <= set(row) for row in r["chain"])
+    calls = c.get(f"/api/chain?ticker=SPY&expiration={exp}&strikes=3&side=call", headers=auth(keys)).json()
+    assert [row["strike"] for row in calls["chain"]] == ks and all("put" not in row for row in calls["chain"])
+    assert calls["atm_strike"] == r["atm_strike"]
+    wide = c.get(f"/api/chain?ticker=SPY&expiration={exp}&strikes=500", headers=auth(keys)).json()
+    assert len(wide["chain"]) == 21 and wide["more_below"] is False and wide["has_more"] is False
+    assert c.get(f"/api/chain?ticker=SPY&expiration={exp}&strikes=0", headers=auth(keys)).status_code == 422
+    assert c.get(f"/api/chain?ticker=SPY&expiration={exp}&strikes=501", headers=auth(keys)).status_code == 422
+
+
+def _side(bid, ask):
+    return {"bid": bid, "ask": ask}
+
+
+def test_atm_strike_nearest_underlying_then_put_call_parity():
+    rows = {k: {"strike": k, "call": _side(c, c + 0.2), "put": _side(p, p + 0.2)}
+            for k, c, p in [(95, 7.0, 2.0), (100, 4.0, 4.1), (105, 2.0, 6.5)]}
+    assert atm_strike(rows, 101.0) == (100, "underlying")
+    assert atm_strike(rows, 102.5) == (100, "underlying")  # a tie goes to the lower strike
+    assert atm_strike(rows, None) == (100, "put_call_parity")
+    rows[100]["put"] = _side(None, 4.3)  # no two-sided quote at 100 any more
+    assert atm_strike(rows, None) == (105, "put_call_parity")
+    assert atm_strike({95: {"strike": 95, "call": _side(None, None)}}, None) == (None, None)
+    assert atm_strike({}, 100.0) == (None, None)
+
+
+def test_centered_window_clamps_at_the_edges():
+    ks = [90.0, 95.0, 100.0, 105.0, 110.0]
+    assert centered_window(ks, 100.0, 1) == (1, 4, 2)
+    assert centered_window(ks, 91.0, 2) == (0, 3, 0)
+    assert centered_window(ks, 200.0, 2) == (2, 5, 4)
+    assert centered_window(ks, 102.0, 10) == (0, 5, 2)
+    assert centered_window(ks, None, 1) == (0, 3, None)
+    assert centered_window([], 100.0, 3) == (0, 0, None)
 
 
 def test_chain_input_validation(tmp_path):
