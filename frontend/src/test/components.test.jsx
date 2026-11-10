@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { api, ApiError, setTokenProvider } from '../api.js';
 import Builder, { PayoffResult, TEMPLATES, validateLegs } from '../components/Builder.jsx';
 import ChainViewer from '../components/ChainViewer.jsx';
@@ -10,11 +10,16 @@ import { mockFetch } from './fetchMock.js';
 
 const quote = (k, t) => ({ option_type: t, strike: k, bid: 1, ask: 1.2, volume: null, open_interest: null,
   implied_volatility: null, multiplier: 100, adjusted: false, quote_time: '1970-01-01T00:00:00+00:00' });
-const chain = (page, strikes) => ({
-  ticker: 'SPY', expiration: '2026-12-18', underlying_price: 100, page, page_size: 20, total_strikes: 40,
-  has_more: page < 2, provider: 'mock', data_status: 'synthetic', data_status_label: 'Synthetic demo data — not market prices',
+const chain = (page, strikes, { side = 'both', atm = null, basis = 'underlying', underlying = 100, total = 40 } = {}) => ({
+  ticker: 'SPY', expiration: '2026-12-18', underlying_price: underlying, page, page_size: strikes.length, total_strikes: total,
+  has_more: false, atm_strike: atm, atm_basis: atm == null ? null : basis, strikes_each_side: 10,
+  provider: 'mock', data_status: 'synthetic', data_status_label: 'Synthetic demo data — not market prices',
   freshness: { as_of: null, stale: null }, units: { prices: 'USD per share' },
-  chain: strikes.map((k) => ({ strike: k, call: quote(k, 'call'), put: quote(k, 'put') })),
+  chain: strikes.map((k) => ({
+    strike: k,
+    ...(side !== 'put' ? { call: quote(k, 'call') } : {}),
+    ...(side !== 'call' ? { put: quote(k, 'put') } : {}),
+  })),
 });
 
 describe('api client', () => {
@@ -85,21 +90,105 @@ describe('T2 builder', () => {
 });
 
 describe('T1 chain viewer', () => {
-  it('labels synthetic data, pages strikes and never says real-time', async () => {
-    mockFetch([
+  beforeEach(() => window.localStorage.clear());
+
+  const loadSpy = async (user) => {
+    await user.type(screen.getByLabelText('Ticker'), 'spy');
+    await user.click(screen.getByRole('button', { name: 'Load' }));
+    return screen.findByRole('table');
+  };
+
+  it('labels synthetic data, centres on the money and never says real-time', async () => {
+    const calls = mockFetch([
       ['/api/expirations', { body: { expirations: ['2026-12-18'], data_status: 'synthetic' } }],
-      [/page=1&/, { body: chain(1, [90, 95]) }],
-      [/page=2&/, { body: chain(2, [100]) }],
+      [/\/api\/chain/, { body: chain(1, [95, 100, 105], { atm: 100, total: 21 }) }],
     ]);
     const user = userEvent.setup();
     render(<ChainViewer />);
-    await user.type(screen.getByLabelText('Ticker'), 'spy');
-    await user.click(screen.getByRole('button', { name: 'Load' }));
-    await screen.findByRole('table');
+    const table = await loadSpy(user);
     expect(screen.getByTestId('data-status')).toHaveTextContent('Synthetic demo data');
     expect(document.body.textContent).not.toMatch(/real-time/i);
-    await user.click(screen.getByRole('button', { name: 'More strikes' }));
-    await waitFor(() => expect(within(screen.getByRole('table')).getAllByRole('row')).toHaveLength(3));
+    const chainCall = calls.find((c) => c.url.includes('/api/chain'));
+    expect(chainCall.url).toMatch(/strikes=10/);
+    expect(chainCall.url).toMatch(/side=both/);
+    const atmRow = within(table).getAllByRole('row').find((r) => r.classList.contains('atm'));
+    expect(atmRow).toHaveTextContent('100');
+    expect(within(atmRow).getByText('ATM')).toBeInTheDocument();
+    expect(screen.getByTestId('chain-summary')).toHaveTextContent('Showing 3 of 21 strikes, centred on 100 (ATM, from underlying)');
+    expect(screen.queryByRole('button', { name: 'More strikes' })).toBeNull();
+  });
+
+  it('shades in-the-money cells on each side of the strike', async () => {
+    mockFetch([
+      ['/api/expirations', { body: { expirations: ['2026-12-18'] } }],
+      [/\/api\/chain/, { body: chain(1, [95, 100, 105], { atm: 100, underlying: 101 }) }],
+    ]);
+    const user = userEvent.setup();
+    render(<ChainViewer />);
+    const table = await loadSpy(user);
+    const [, , low, mid, high] = within(table).getAllByRole('row');
+    const cells = (row) => within(row).getAllByRole('cell');
+    // calls left of the strike are ITM below the underlying, puts right of it above
+    expect(cells(low)[0]).toHaveClass('itm');
+    expect(cells(low)[6]).not.toHaveClass('itm');
+    expect(cells(mid)[0]).toHaveClass('itm');
+    expect(cells(high)[0]).not.toHaveClass('itm');
+    expect(cells(high)[6]).toHaveClass('itm');
+  });
+
+  it('shows only the chosen side and asks the server for it', async () => {
+    const calls = mockFetch([
+      ['/api/expirations', { body: { expirations: ['2026-12-18'] } }],
+      [/\/api\/chain/, (url) => ({ body: chain(1, [95, 100, 105], { atm: 100, side: new URL(url, 'http://x').searchParams.get('side') }) })],
+    ]);
+    const user = userEvent.setup();
+    render(<ChainViewer />);
+    await loadSpy(user);
+    expect(screen.getByRole('columnheader', { name: 'Calls' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Puts' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('radio', { name: 'Puts' }));
+    await waitFor(() => expect(calls.at(-1).url).toMatch(/side=put/));
+    await waitFor(() => expect(screen.queryByRole('columnheader', { name: 'Calls' })).toBeNull());
+    expect(screen.getByRole('columnheader', { name: 'Puts' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('radio', { name: 'Calls' }));
+    await waitFor(() => expect(screen.queryByRole('columnheader', { name: 'Puts' })).toBeNull());
+    expect(calls.at(-1).url).toMatch(/side=call/);
+    expect(screen.getByRole('columnheader', { name: 'Calls' })).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem('optionscoach.chain.view')).side).toBe('call');
+  });
+
+  it('asks for the chosen depth, "All" included, and remembers it', async () => {
+    const calls = mockFetch([
+      ['/api/expirations', { body: { expirations: ['2026-12-18'] } }],
+      [/\/api\/chain/, { body: chain(1, [100], { atm: 100 }) }],
+    ]);
+    const user = userEvent.setup();
+    const { unmount } = render(<ChainViewer />);
+    await loadSpy(user);
+    await user.selectOptions(screen.getByLabelText('Strikes each side'), '20');
+    await waitFor(() => expect(calls.at(-1).url).toMatch(/strikes=20/));
+    await user.selectOptions(screen.getByLabelText('Strikes each side'), 'all');
+    await waitFor(() => expect(calls.at(-1).url).toMatch(/strikes=500/));
+    unmount();
+    render(<ChainViewer />);
+    expect(screen.getByLabelText('Strikes each side')).toHaveValue('all');
+  });
+
+  it('survives storage that throws', async () => {
+    const getItem = Storage.prototype.getItem;
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.getItem = () => { throw new Error('blocked'); };
+    Storage.prototype.setItem = () => { throw new Error('blocked'); };
+    try {
+      render(<ChainViewer />);
+      expect(screen.getByLabelText('Strikes each side')).toHaveValue('10');
+      expect(screen.getByRole('radio', { name: 'Both' })).toBeChecked();
+    } finally {
+      Storage.prototype.getItem = getItem;
+      Storage.prototype.setItem = setItem;
+    }
   });
 
   it('shows provider errors and validates input before calling', async () => {
