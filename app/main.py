@@ -44,12 +44,33 @@ async def _lifespan(app: FastAPI):
     # Providers with a slow sign-in (ThetaData's library) start it now, in the
     # background, so a cold start does not spend the first request on it.
     warm_up = getattr(getattr(app.state, "options_provider", None), "warm_up", None)
-    task = asyncio.create_task(warm_up()) if callable(warm_up) else None
+    tasks = [asyncio.create_task(warm_up())] if callable(warm_up) else []
+    worker = _embedded_worker(app)
+    if worker is not None:
+        tasks.append(asyncio.create_task(worker.run_forever(None)))
     try:
         yield
     finally:
-        if task is not None and not task.done():
-            task.cancel()
+        if worker is not None:
+            worker.stopping = True
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+
+def _embedded_worker(app: FastAPI):
+    """EMBEDDED_WORKER=1: run the job queue in this process (a single free web
+    service has no worker service). Jobs are still durable rows, so a separate
+    `python -m app.worker` can take over later without any change."""
+    settings = app.state.settings
+    if not settings.embedded_worker:
+        return None
+    from app.providers.options.factory import build_history_provider
+    from app.worker import Worker
+
+    history = build_history_provider(settings)
+    log.info("embedded_worker started (history provider: %s)", getattr(history, "name", None))
+    return Worker(app.state.db, app.state.options_provider, app.state.analytics_cfg, history_provider=history)
 
 
 def _configure_logging(level: str) -> None:
@@ -162,9 +183,18 @@ def create_app(
 
     _install_error_handlers(app)
 
-    from app.api import routes_analytics, routes_chat, routes_contracts, routes_market, routes_public, routes_state
+    from app.api import (
+        routes_analytics,
+        routes_backtest,
+        routes_chat,
+        routes_contracts,
+        routes_market,
+        routes_public,
+        routes_state,
+    )
 
-    for module in (routes_public, routes_chat, routes_state, routes_market, routes_analytics, routes_contracts):
+    for module in (routes_public, routes_chat, routes_state, routes_market, routes_analytics, routes_backtest,
+                   routes_contracts):
         app.include_router(module.router)
 
     _mount_frontend(app)

@@ -102,6 +102,16 @@ def heartbeat(db: Database, job_id: str, worker_id: str, now: dt.datetime | None
         return not job.cancel_requested
 
 
+def progress(db: Database, job_id: str, worker_id: str, info: dict) -> None:
+    """Publish progress while running; it is shown as result["progress"] until the job finishes."""
+    with db.session() as s:
+        job = s.get(Job, job_id)
+        if job is None or job.locked_by != worker_id or job.status != "running":
+            return
+        job.result = {"progress": info}
+        job.updated_at = utcnow()
+
+
 def complete(db: Database, job_id: str, worker_id: str, result: dict) -> None:
     with db.session() as s:
         job = s.get(Job, job_id)

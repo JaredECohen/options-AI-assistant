@@ -1,14 +1,12 @@
-"""Analytics (P4/P5), comparison (T4), screener + saved screens (P6), backtests
-and jobs (P7), stored research (D) and course context (T8)."""
+"""Analytics (P4/P5), comparison (T4), screener + saved screens (P6), jobs (P7;
+backtests live in routes_backtest), stored research (D) and course context (T8)."""
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
-import json
 import math
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field, StringConstraints
 
 from app.analytics import screener
@@ -158,23 +156,6 @@ def get_screen(screen_id: str, request: Request, principal: Principal = Depends(
 def delete_screen(screen_id: str, request: Request, principal: Principal = Depends(require("screens"))):
     repo.delete_screen(request.app.state.db, principal.user_id, screen_id)
     return {"status": "deleted"}
-
-
-BACKTEST_BLOCKERS = [
-    "shared backtesting engine (JaredECohen/backtesting-engine) not found or not ready",
-    "no licensed historical EOD options data source selected (see docs/PROVIDERS.md)",
-]
-
-
-@router.post("/api/backtests")
-def create_backtest(request: Request, spec: dict = Body(...), principal: Principal = Depends(require("backtest"))):
-    """Blocked until an engine and historical data exist. Returns 503 with the
-    blockers rather than running anything synthetic."""
-    if not request.app.state.settings.backtest_engine_url:
-        raise _err(503, "backtest_unavailable", "Backtesting is not available yet.", blocked_by=BACKTEST_BLOCKERS)
-    key = "backtest:" + hashlib.sha256(json.dumps([principal.user_id, spec], sort_keys=True).encode()).hexdigest()
-    job = queue.enqueue(request.app.state.db, "backtest", key, spec, user_id=principal.user_id)
-    return job.__dict__
 
 
 @router.get("/api/jobs/{job_id}")

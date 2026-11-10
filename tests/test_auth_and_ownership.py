@@ -68,7 +68,7 @@ def test_entitlement_denials(tmp_path, row, status, code):
 
 def test_plan_gate_on_backtests(tmp_path):
     c, keys = client(tmp_path, entitlements={"*": {"account_state": "active", "beta_status": "approved", "plan": "free"}})
-    r = c.post("/api/backtests", json={"kind": "short_put"}, headers=auth(keys))
+    r = c.post("/api/backtests", json={"underlying": "SPY", "start": "2026-01-05", "end": "2026-03-31", "strategy": "short_put"}, headers=auth(keys))
     assert r.status_code == 402 and r.json()["error"] == "plan_required"
     # free users still get the free features
     assert c.get("/api/conversations", headers=auth(keys)).status_code == 200
@@ -76,9 +76,9 @@ def test_plan_gate_on_backtests(tmp_path):
 
 def test_backtests_blocked_with_reasons_for_pro(tmp_path):
     c, keys = client(tmp_path)
-    r = c.post("/api/backtests", json={"kind": "short_put"}, headers=auth(keys))
+    r = c.post("/api/backtests", json={"underlying": "SPY", "start": "2026-01-05", "end": "2026-03-31", "strategy": "short_put"}, headers=auth(keys))
     assert r.status_code == 503
-    assert r.json()["error"] == "backtest_unavailable" and len(r.json()["blocked_by"]) == 2
+    assert r.json()["error"] == "backtest_unavailable" and "OPTIONS_HISTORY_PROVIDER" in r.json()["blocked_by"][0]
 
 
 def test_revoked_user_can_still_export_their_data(tmp_path):

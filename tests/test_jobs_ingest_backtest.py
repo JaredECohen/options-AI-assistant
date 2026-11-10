@@ -8,8 +8,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.analytics.chain import AnalyticsConfig
-from app.backtest import metrics, short_put
-from app.backtest.interfaces import Costs, StrategySpec
+from app.backtest import metrics
 from app.db.models import Base, IngestBatch, IVDaily, OptionQuoteSnapshot, UnderlyingDailyBar
 from app.db.session import Database
 from app.jobs import queue
@@ -121,21 +120,6 @@ async def test_worker_runs_jobs_and_records_failures(db):
 
 # ---- P7 arithmetic, by hand ----
 
-def test_short_put_accounting_by_hand():
-    costs = Costs(commission_per_contract=0.65, fill="conservative")
-    credit = short_put.open_credit(bid=2.00, ask=2.20, costs=costs)
-    assert credit == pytest.approx(200 - 0.65)
-    assert short_put.close_debit(1.00, 1.10, costs) == pytest.approx(110 + 0.65)
-    assert short_put.expiry_cost(100, 92.5, costs) == pytest.approx(750.0)
-    assert short_put.expiry_cost(100, 101, costs) == 0.0
-    assert short_put.collateral(100) == 10_000
-    # integration case: sold 100P for 2.00 bid, assigned at 92.50 -> 199.35 - 750 = -550.65
-    pnl = credit - short_put.expiry_cost(100, 92.5, costs)
-    assert pnl == pytest.approx(-550.65)
-    with pytest.raises(ValueError):
-        short_put.open_credit(2.5, 2.0, costs)
-
-
 def test_metrics_by_hand():
     equity = [100.0, 110.0, 99.0, 108.9]
     rets = metrics.daily_returns(equity)
@@ -146,11 +130,6 @@ def test_metrics_by_hand():
     assert metrics.win_rate([10, -5, 0, 3]) == 0.5
     assert metrics.cvar([0.01, -0.02, 0.03, -0.05], 0.95) == pytest.approx(0.05)
     assert metrics.sharpe([0.01, 0.01]) is None and metrics.win_rate([]) is None
-
-
-def test_strategy_spec_validation():
-    with pytest.raises(ValueError):
-        StrategySpec("iron_condor", "SPY", dt.date(2025, 1, 1), dt.date(2025, 6, 1)).validate()
-    with pytest.raises(ValueError):
-        StrategySpec("short_put", "SPY", dt.date(2025, 6, 1), dt.date(2025, 1, 1)).validate()
-    StrategySpec("short_put", "SPY", dt.date(2025, 1, 1), dt.date(2025, 6, 1)).validate()
+    down = (0.01 / 3) ** 0.5  # sqrt(mean(min(r,0)^2)) = sqrt(0.01/3)
+    assert metrics.sortino(rets) == pytest.approx(mean / down * 252 ** 0.5)
+    assert metrics.sortino([0.01, 0.02]) is None

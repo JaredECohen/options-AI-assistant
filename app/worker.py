@@ -1,8 +1,10 @@
 """Background worker: `python -m app.worker`.
 
 Owns the job queue and (only when ENABLE_SCHEDULER=1) the ingestion schedule.
-The web service never runs jobs or schedules, so heavy work never shares a
-request's process or memory. Not provisioned yet; see docs/RUNBOOK.md.
+By default the web service never runs jobs, so heavy work never shares a
+request's process or memory. On a single free web service (no worker service)
+EMBEDDED_WORKER=1 runs this same loop inside the web process instead; see
+app.main._lifespan and docs/BACKTESTING.md.
 """
 from __future__ import annotations
 
@@ -52,8 +54,24 @@ class Worker:
                 raise RuntimeError("blocked: OPTIONS_HISTORY_PROVIDER is not configured (ThetaData)")
             return await backfill_iv_history(self.db, self.history_provider, job.payload, self.cfg, should_continue)
         if job.kind == "backtest":
-            raise RuntimeError("blocked: no backtesting engine is configured (see docs/TRACEABILITY.md P7)")
+            if self.history_provider is None:
+                raise RuntimeError("blocked: OPTIONS_HISTORY_PROVIDER is not configured (ThetaData)")
+            return await self._backtest(job, should_continue, cancelled)
         raise RuntimeError(f"unknown job kind {job.kind}")
+
+    async def _backtest(self, job, should_continue, cancelled) -> dict:
+        from app.backtest.data import CachedHistory
+        from app.backtest.engine import Cancelled, run_backtest
+        from app.backtest.spec import BacktestRequest
+
+        req = BacktestRequest.model_validate(job.payload)
+        data = CachedHistory(self.history_provider, self.db, req.underlying)
+        try:
+            return await run_backtest(req, data, self.cfg,
+                                      progress=lambda info: queue.progress(self.db, job.id, self.worker_id, info),
+                                      should_continue=should_continue)
+        except Cancelled:
+            return {"cancelled": True}
 
     async def run_once(self) -> bool:
         queue.recover_expired(self.db)

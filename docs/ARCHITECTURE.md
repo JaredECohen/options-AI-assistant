@@ -15,7 +15,9 @@ Render blueprint.
 - The analytics are numpy-vectorized and fast enough in-process for one expiry (≈21–200 contracts).
   The only work that does not belong in a web request is multi-day ingestion and backtesting, which
   go through the durable job queue to a separate worker entrypoint (`python -m app.worker`) of the same
-  image. No runtime evidence justifies a separate analytics service.
+  image. While production is a single free web service, `EMBEDDED_WORKER=1` runs that same loop inside
+  the web process (2026-11-09); jobs stay durable rows, so a worker service can take over unchanged.
+  No runtime evidence justifies a separate analytics service.
 - MarketMosaic's web/worker split exists because of memory-profile incidents (MarketMosaic memory:
   worker OOM on the 512 MB plan). Co-hosting OptionsCoach would re-couple those profiles.
 - Integration is by narrow, versioned HTTP contracts (`docs/API_CONTRACTS.md`), never shared database
