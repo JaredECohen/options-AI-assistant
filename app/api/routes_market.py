@@ -55,6 +55,43 @@ async def expirations(request: Request, ticker: str = TICKER, principal: Princip
     return {"ticker": ticker.upper(), "expirations": await provider.list_expirations(ticker), **_provenance(provider)}
 
 
+def _mid(q: dict | None) -> float | None:
+    if not q or q.get("bid") is None or q.get("ask") is None:
+        return None
+    return (q["bid"] + q["ask"]) / 2
+
+
+def atm_strike(by_strike: dict[float, dict], underlying: float | None) -> tuple[float | None, str | None]:
+    """The at-the-money strike and how it was found. Nearest the underlying
+    (ties to the lower strike); without an underlying, the strike where call and
+    put mids are closest (put-call parity puts that near the forward)."""
+    strikes = sorted(by_strike)
+    if not strikes:
+        return None, None
+    if underlying is not None:
+        return min(strikes, key=lambda k: (abs(k - underlying), k)), "underlying"
+    gaps = []
+    for k in strikes:
+        c, p = _mid(by_strike[k].get("call")), _mid(by_strike[k].get("put"))
+        if c is not None and p is not None:
+            gaps.append((abs(c - p), k))
+    if gaps:
+        return min(gaps)[1], "put_call_parity"
+    return None, None
+
+
+def centered_window(strikes: list[float], atm: float | None, each_side: int) -> tuple[int, int, int | None]:
+    """[lo, hi) slice of the ascending strikes list covering each_side strikes
+    below and above the one nearest atm, plus that strike's index. Without an
+    ATM the window starts at the lowest strike."""
+    if not strikes:
+        return 0, 0, None
+    if atm is None:
+        return 0, min(len(strikes), 2 * each_side + 1), None
+    idx = min(range(len(strikes)), key=lambda i: (abs(strikes[i] - atm), strikes[i]))
+    return max(0, idx - each_side), min(len(strikes), idx + each_side + 1), idx
+
+
 @router.get("/api/chain")
 async def chain(
     request: Request,
@@ -63,38 +100,56 @@ async def chain(
     side: Literal["both", "call", "put"] = "both",
     page: int = Query(1, ge=1, le=1000),
     page_size: int = Query(40, ge=5, le=200),
+    strikes: int | None = Query(None, ge=1, le=500, description="strikes on EACH side of the money; omit to page"),
     principal: Principal = Depends(require("market_data")),
 ):
-    """One expiration, paged by strike (ascending). Rows keep the legacy
-    {strike, call, put} shape with bid/ask/last/mark plus volume, OI, IV, greeks
-    (with their source, or null), contract symbol, multiplier and quote time."""
+    """One expiration. With `strikes`, a window centred on the at-the-money
+    strike; without it, paged by strike from the lowest up (legacy). Rows keep
+    the {strike, call, put} shape with bid/ask/last/mark plus volume, OI, IV,
+    greeks (with their source, or null), contract symbol, multiplier and quote time."""
     provider = request.app.state.options_provider
     if not expiration:  # legacy behaviour: list expirations
         return {"ticker": ticker.upper(), "expirations": await provider.list_expirations(ticker), **_provenance(provider)}
     quotes = await provider.get_chain(ticker, expiration)
-    by_strike: dict[float, dict] = {}
-    for q in quotes:
-        if side != "both" and q.option_type != side:
-            continue
-        row = by_strike.setdefault(q.strike, {"strike": q.strike})
-        row[q.option_type] = q.as_json()
-    strikes = sorted(by_strike)
-    total = len(strikes)
-    start = (page - 1) * page_size
-    rows = [by_strike[k] for k in strikes[start : start + page_size]]
     try:
         underlying = await provider.get_underlying_price(ticker)
     except Exception:  # noqa: BLE001 - the chain is still useful without it
         underlying = None
+    by_strike: dict[float, dict] = {}
+    for q in quotes:
+        row = by_strike.setdefault(q.strike, {"strike": q.strike})
+        row[q.option_type] = q.as_json()
+    atm, atm_basis = atm_strike(by_strike, underlying)  # on both sides, whatever is shown
+    if side != "both":
+        other = "put" if side == "call" else "call"
+        by_strike = {k: {key: v for key, v in row.items() if key != other}
+                     for k, row in by_strike.items() if side in row}
+    ordered = sorted(by_strike)
+    total = len(ordered)
+    window: dict = {}
+    if strikes is not None:
+        lo, hi, _idx = centered_window(ordered, atm, strikes)
+        rows = [by_strike[k] for k in ordered[lo:hi]]
+        window = {"strikes_each_side": strikes, "more_below": lo > 0, "more_above": hi < total}
+        has_more = hi < total
+        page, page_size = 1, len(rows)
+    else:
+        start = (page - 1) * page_size
+        rows = [by_strike[k] for k in ordered[start : start + page_size]]
+        has_more = start + page_size < total
+        window = {"strikes_each_side": None, "more_below": start > 0, "more_above": has_more}
     return {
         "ticker": ticker.upper(),
         "expiration": expiration,
         "underlying_price": underlying,
+        "atm_strike": atm,
+        "atm_basis": atm_basis,
         "chain": rows,
         "page": page,
         "page_size": page_size,
         "total_strikes": total,
-        "has_more": start + page_size < total,
+        "has_more": has_more,
+        **window,
         "freshness": freshness([q.quote_time for q in quotes if q.quote_time], provider.data_status),
         **_provenance(provider),
         "units": {"prices": "USD per share", "multiplier": "shares per contract (see each contract)",

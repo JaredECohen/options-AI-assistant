@@ -321,6 +321,26 @@ table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; 
 th, td { border-bottom: 1px solid var(--border); padding: 4px 6px; text-align: right; }
 th[scope="row"], td:first-child { text-align: left; }
 table.chain th[scope="row"] { text-align: center; }
+/* chain: scrolls in its own box so the at-the-money row can be centred */
+.chain-wrap { max-height: 70vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+.chain-wrap table.chain { margin: 0; }
+table.chain thead { position: sticky; top: 0; z-index: 1; background: var(--panel); }
+table.chain thead th { background: var(--panel); }
+table.chain td.itm { background: rgba(148, 163, 184, 0.09); }
+table.chain tr.atm > * { background: rgba(56, 189, 248, 0.16); border-top: 1px solid var(--accent); border-bottom: 1px solid var(--accent); }
+.atm-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.04em; color: #0b1220; background: var(--accent); vertical-align: middle; }
+/* segmented radio group (Calls / Puts / Both) */
+fieldset.segmented { border: 0; margin: 0; padding: 0; min-width: 0; }
+fieldset.segmented legend { font-size: 12px; color: var(--muted); padding: 0; margin-bottom: 4px; }
+fieldset.segmented > label { display: inline-block; margin: 0; padding: 9px 12px; font-size: 14px; color: var(--muted);
+  border: 1px solid var(--border); background: #0b1220; cursor: pointer; position: relative; }
+fieldset.segmented > label + label { margin-left: -1px; }
+fieldset.segmented > label:first-of-type { border-radius: 10px 0 0 10px; }
+fieldset.segmented > label:last-of-type { border-radius: 0 10px 10px 0; }
+fieldset.segmented > label.active { z-index: 1; color: var(--text); background: rgba(56, 189, 248, 0.16); border-color: var(--accent); }
+fieldset.segmented input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+fieldset.segmented > label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 tr.excluded { opacity: 0.6; }
 table.legs input, table.legs select { width: 100%; min-width: 70px; }
 td.actions { white-space: nowrap; text-align: left; }
