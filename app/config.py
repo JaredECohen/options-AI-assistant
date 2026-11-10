@@ -91,7 +91,7 @@ ENV_VARS: dict[str, tuple[str, str]] = {
     "ANALYTICS_DIVIDEND_YIELD": ("flat dividend-yield assumption, default 0 (labelled)", "optional"),
     "INGEST_UNIVERSE": ("worker only: comma-separated tickers to ingest daily", "worker"),
     "ENABLE_SCHEDULER": ("worker only: 1 lets this process enqueue scheduled ingestion", "worker"),
-    "BACKTEST_ENGINE_URL": ("shared backtesting engine endpoint; unset = backtests blocked", "optional"),
+    "EMBEDDED_WORKER": ("1 = run the job queue (backtests, backfills) inside the web process; for a single free web service", "optional"),
 }
 
 
@@ -199,7 +199,7 @@ class Settings:
     course_context_dir: str = ""
     analytics_risk_free_rate: float = 0.04
     analytics_dividend_yield: float = 0.0
-    backtest_engine_url: str = ""
+    embedded_worker: bool = False
 
     @property
     def is_prod_like(self) -> bool:
@@ -291,7 +291,7 @@ def load_settings() -> Settings:
         course_context_dir=os.getenv("COURSE_CONTEXT_DIR", ""),
         analytics_risk_free_rate=_float("ANALYTICS_RISK_FREE_RATE", 0.04),
         analytics_dividend_yield=_float("ANALYTICS_DIVIDEND_YIELD", 0.0),
-        backtest_engine_url=os.getenv("BACKTEST_ENGINE_URL", ""),
+        embedded_worker=_bool("EMBEDDED_WORKER"),
     )
 
 

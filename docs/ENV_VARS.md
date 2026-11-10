@@ -66,4 +66,4 @@ never committed, never logged. `prod` = required in staging and production; `wor
 | `ANALYTICS_DIVIDEND_YIELD` |  | optional | flat dividend-yield assumption, default 0 (labelled) |
 | `INGEST_UNIVERSE` |  | worker | worker only: comma-separated tickers to ingest daily |
 | `ENABLE_SCHEDULER` |  | worker | worker only: 1 lets this process enqueue scheduled ingestion |
-| `BACKTEST_ENGINE_URL` |  | optional | shared backtesting engine endpoint; unset = backtests blocked |
+| `EMBEDDED_WORKER` |  | optional | 1 = run the job queue (backtests, backfills) inside the web process; for a single free web service |

@@ -78,6 +78,8 @@ class EodOption:
     bid: float | None
     ask: float | None
     underlying_price: float | None = None
+    delta: float | None = None  # vendor delta when the history carries greeks
+    implied_vol: float | None = None
 
 
 class OptionsDataProvider(Protocol):

@@ -3,6 +3,9 @@
 - returns: simple daily returns of the equity curve.
 - sharpe: mean(excess daily return)/std(ddof=1) * sqrt(252); rf is an annual rate
   converted to daily as rf/252. Unavailable with < 2 returns or zero dispersion.
+- sortino: mean(excess daily return)/downside deviation * sqrt(252), where the
+  downside deviation is sqrt(mean(min(r, 0)^2)) over all days. Unavailable with
+  < 2 returns or no down days.
 - max_drawdown: largest peak-to-trough decline of equity, as a positive fraction.
 - win_rate: share of closed trades with pnl > 0 (ties are not wins).
 - cvar_95: mean of the worst 5% daily returns (historical, at least one obs),
@@ -31,6 +34,16 @@ def sharpe(returns: Sequence[float], rf_annual: float = 0.0) -> float | None:
     if sd <= 1e-15:
         return None
     return float(np.mean(r) / sd * math.sqrt(252))
+
+
+def sortino(returns: Sequence[float], rf_annual: float = 0.0) -> float | None:
+    r = np.asarray(returns, dtype=float) - rf_annual / 252
+    if r.size < 2:
+        return None
+    downside = float(np.sqrt(np.mean(np.minimum(r, 0.0) ** 2)))
+    if downside <= 1e-15:
+        return None
+    return float(np.mean(r) / downside * math.sqrt(252))
 
 
 def max_drawdown(equity: Sequence[float]) -> float:

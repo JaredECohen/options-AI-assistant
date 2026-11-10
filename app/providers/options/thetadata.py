@@ -174,6 +174,9 @@ def _library_call(path: str, p: dict) -> tuple[str, dict]:
     def hist():
         kw = opt()
         kw.update(start_date=_as_date(p["start_date"]), end_date=_as_date(p["end_date"]))
+        for k in ("strike", "right"):  # one contract: ~0.5 s instead of ~4 s per chain-day
+            if k in p:
+                kw[k] = str(p[k])
         return kw
     table: dict[str, tuple[str, Callable[[], dict]]] = {
         "/v3/stock/snapshot/quote": ("stock_snapshot_quote", lambda: {"symbol": [sym]}),
@@ -448,9 +451,29 @@ class ThetaDataProvider:
     async def get_daily_closes(self, ticker: str, start: dt.date, end: dt.date) -> list[float]:
         return [c for _d, c in await self.get_daily_bars(ticker, start, end)]
 
-    async def get_eod_options(self, ticker: str, expiration: str, start: dt.date, end: dt.date) -> list[EodOption]:
+    async def get_eod_options(self, ticker: str, expiration: str, start: dt.date, end: dt.date,
+                              strike_range: int = 40) -> list[EodOption]:
         params = {"symbol": self._symbol(ticker), "expiration": expiration.replace("-", ""),
-                  "start_date": f"{start:%Y%m%d}", "end_date": f"{end:%Y%m%d}", "strike_range": 40}
+                  "start_date": f"{start:%Y%m%d}", "end_date": f"{end:%Y%m%d}", "strike_range": strike_range}
+        return await self._eod(params, expiration)
+
+    async def get_eod_chain(self, ticker: str, expiration: str, day: dt.date, strike_range: int = 40) -> list[EodOption]:
+        """The closing chain of one expiration on one day (~4 s live, about the
+        same cost whatever the strike count, so backtests fetch it only on entry days)."""
+        return await self.get_eod_options(ticker, expiration, day, day, strike_range)
+
+    async def get_contract_eod(self, ticker: str, expiration: str, strike: float, option_type: str,
+                               start: dt.date, end: dt.date) -> list[EodOption]:
+        """Daily closes of ONE contract over a range (~0.5 s live for 70 days; no
+        28-day cap observed for single contracts)."""
+        if option_type not in ("call", "put"):
+            raise QuoteUnavailable(f"invalid option type {option_type!r}")
+        params = {"symbol": self._symbol(ticker), "expiration": expiration.replace("-", ""),
+                  "start_date": f"{start:%Y%m%d}", "end_date": f"{end:%Y%m%d}",
+                  "strike": f"{strike:g}", "right": option_type}
+        return await self._eod(params, expiration)
+
+    async def _eod(self, params: dict, expiration: str) -> list[EodOption]:
         try:
             try:
                 rows = await self._get("/v3/option/history/greeks/eod", params)  # Standard: carries underlying_price
@@ -466,5 +489,6 @@ class ThetaDataProvider:
                 continue
             out.append(EodOption(date=day, expiration=_exp(r.get("expiration")) or expiration, strike=strike,
                                  option_type=right, bid=_num(r.get("bid")), ask=_num(r.get("ask")),
-                                 underlying_price=_num(r.get("underlying_price"))))
+                                 underlying_price=_num(r.get("underlying_price")), delta=_num(r.get("delta")),
+                                 implied_vol=_num(r.get("implied_vol"))))
         return out

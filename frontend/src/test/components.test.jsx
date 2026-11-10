@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { api, ApiError, setTokenProvider } from '../api.js';
@@ -252,15 +252,264 @@ describe('chat and blocked features', () => {
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('temporarily paused');
   });
+});
 
-  it('backtests show blockers instead of results', async () => {
-    mockFetch([['/api/backtests', { status: 503, body: { error: 'backtest_unavailable', detail: 'Backtesting is not available yet.',
-      blocked_by: ['engine missing', 'no data'] } }]]);
+// ---- Backtests (docs/BACKTESTING.md) ----
+const leg = (right, side, strike) => ({ right, side, ratio: 1, strike });
+const PRESETS = [
+  { key: 'short_put', label: 'Short put', kind: 'credit', description: 'Sell one put for premium.',
+    legs: [leg('put', 'sell', { method: 'delta', value: 0.3 })], stock: null,
+    exit: { profit_target_pct: 50, stop_loss_pct: 200, exit_dte: 21, max_hold_days: null } },
+  { key: 'iron_condor', label: 'Iron condor', kind: 'credit', description: 'Sell a put spread and a call spread.',
+    legs: [leg('put', 'sell', { method: 'delta', value: 0.16 }), leg('put', 'buy', { method: 'offset', from_leg: 0, value: -5 }),
+      leg('call', 'sell', { method: 'delta', value: 0.16 }), leg('call', 'buy', { method: 'offset', from_leg: 2, value: 5 })],
+    stock: null, exit: { profit_target_pct: 50, stop_loss_pct: 200, exit_dte: 21, max_hold_days: null } },
+  { key: 'covered_call', label: 'Covered call', kind: 'credit', description: 'Own shares, sell a call.',
+    legs: [leg('call', 'sell', { method: 'delta', value: 0.3 })], stock: { shares_per_contract: 100 },
+    exit: { profit_target_pct: 50, stop_loss_pct: null, exit_dte: 7, max_hold_days: null } },
+  { key: 'custom', label: 'Custom', kind: 'credit', description: 'Build your own.', legs: [], stock: null,
+    exit: { profit_target_pct: null, stop_loss_pct: null, exit_dte: null, max_hold_days: null } },
+];
+const DEFAULTS = {
+  underlying: 'SPY', start: '2025-01-02', end: '2025-12-31', strategy: 'short_put', legs: [], stock: null,
+  entry: { dte_target: 45, dte_min: 30, dte_max: 60, expirations: 'any', frequency: 'weekly', weekday: 0, max_open: 3,
+    min_iv: null, max_iv: null, min_credit: null, delta_tolerance: 0.05 },
+  exit: { profit_target_pct: 50, stop_loss_pct: 200, exit_dte: 21, max_hold_days: null },
+  costs: { commission_per_contract: 0.65, fill: 'conservative', spread_fraction: 0.25, assignment_fee: 0 },
+  sizing: { capital: 100000, mode: 'fixed', contracts: 1, risk_pct: 5 },
+};
+const presetsBody = (over = {}) => ({ presets: PRESETS, defaults: DEFAULTS, available: true, blocked_by: [], ...over });
+const trade = (id, pnl, reason) => ({ id, entry_date: `2025-01-${String(id + 5).padStart(2, '0')}`, exit_date: '2025-01-28',
+  expiration: '2025-02-21', contracts: 1, entry_value: 210, exit_value: -95, pnl, exit_reason: reason, days_held: 17 + id,
+  underlying_entry: 590.1, underlying_exit: 601.3,
+  legs: [{ right: 'put', side: 'sell', strike: 560 + id, ratio: 1, entry_price: 2.1, exit_price: 0.95, entry_delta: -0.16 }] });
+const RESULT = {
+  config: { ...DEFAULTS, strategy: 'short_put', legs: PRESETS[0].legs },
+  summary: { total_return: 0.12, cagr: 0.11, sharpe: 1.23, sortino: 1.6, max_drawdown: 0.08, win_rate: 0.8, cvar_95: 0.01,
+    trades: 3, avg_pnl: 120.5, median_pnl: 140, best_trade: 410, worst_trade: -880, profit_factor: 2.1, avg_days_held: 21.3,
+    final_equity: 112000, time_in_market: 0.9, max_buying_power: 12000, total_commissions: 270.4 },
+  benchmark: { name: 'Buy and hold SPY', total_return: 0.15, cagr: 0.14, sharpe: 1.0, max_drawdown: 0.12 },
+  equity: [
+    { date: '2025-01-02', equity: 100000, benchmark: 100000, drawdown: 0 },
+    { date: '2025-06-02', equity: 106000, benchmark: 104000, drawdown: 0.02 },
+    { date: '2025-12-31', equity: 112000, benchmark: 115000, drawdown: 0 }],
+  monthly_returns: [{ month: '2025-01', return: 0.012 }, { month: '2025-02', return: -0.02 }, { month: '2025-03', return: null }],
+  trades: [trade(1, 112.4, 'profit_target'), trade(2, -300, 'stop_loss'), trade(3, 50, 'profit_target')],
+  exit_reasons: { profit_target: 2, stop_loss: 1 },
+  diagnostics: { skipped_entries: { no_chain: 1, iv_filter: 5 }, stale_marks: 4, requests: 120, cache_hits: 30,
+    data_source: 'ThetaData end-of-day', runtime_seconds: 95.2 },
+  caveats: ['End-of-day data means intraday stop breaches are not seen.'], synthetic: false,
+};
+const job = (status, extra = {}) => ({ id: 'job1', kind: 'backtest', status, attempts: 1, max_attempts: 3, error: null,
+  result: null, cancel_requested: false, ...extra });
+const ESTIMATE = { entry_days: 52, est_requests: 260, est_minutes: 2.5, trading_days: 250 };
+
+// Order matters: first match wins and string routes match by prefix.
+function btRoutes({ presets = presetsBody(), jobs, post, history = [] } = {}) {
+  return [
+    ['/api/backtests/presets', { body: presets }],
+    ['/api/backtests/estimate', { body: ESTIMATE }],
+    [/\/api\/jobs\/job1\/cancel$/, () => ({ body: job('running', { cancel_requested: true }) })],
+    [/\/api\/jobs\/job1$/, jobs || (() => ({ body: job('succeeded', { result: RESULT }) }))],
+    ['/api/backtests', (url, opts) => (opts.method === 'POST'
+      ? (post ? post() : { body: job('queued') }) : { body: { backtests: history } })],
+  ];
+}
+const posts = (calls) => calls.filter((c) => c.opts.method === 'POST' && c.url === '/api/backtests');
+
+describe('Backtests', () => {
+  beforeEach(() => { try { window.localStorage.clear(); } catch { /* ignore */ } });
+
+  it('loads presets and choosing a preset fills the legs', async () => {
+    mockFetch(btRoutes());
     const user = userEvent.setup();
-    render(<Backtests />);
+    render(<Backtests pollMs={10} />);
+    const select = await screen.findByLabelText('Strategy preset');
+    await waitFor(() => expect(within(select).getAllByRole('option')).toHaveLength(PRESETS.length));
+    await user.selectOptions(select, 'iron_condor');
+    expect(screen.getByTestId('preset-desc')).toHaveTextContent('Sell a put spread and a call spread.');
+    expect(screen.getByLabelText('Leg 4 right')).toHaveValue('call');
+    expect(screen.getByLabelText('Leg 4 side')).toHaveValue('buy');
+    expect(screen.getByLabelText('Leg 2 strike method')).toHaveValue('offset');
+    expect(screen.getByLabelText('Leg 2 offset from leg')).toHaveValue('0');
+    expect(screen.getByLabelText('Leg 1 strike value')).toHaveValue(0.16);
+    // Editing a leg turns the strategy into a custom one.
+    await user.selectOptions(screen.getByLabelText('Leg 1 side'), 'buy');
+    expect(screen.getByLabelText('Strategy preset')).toHaveValue('custom');
+    // Restoring it restores the label.
+    await user.selectOptions(screen.getByLabelText('Leg 1 side'), 'sell');
+    expect(screen.getByLabelText('Strategy preset')).toHaveValue('iron_condor');
+  });
+
+  it('shows the blocked notice but keeps the form usable', async () => {
+    mockFetch(btRoutes({ presets: presetsBody({ available: false, blocked_by: ['No history provider configured'] }) }));
+    render(<Backtests pollMs={10} />);
+    expect(await screen.findByTestId('bt-blocked')).toHaveTextContent('No history provider configured');
+    expect(screen.getByLabelText('Underlying')).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Run backtest' })).toBeEnabled();
+  });
+
+  it('blocks submit when the dates are out of order and sends no request', async () => {
+    const calls = mockFetch(btRoutes());
+    const user = userEvent.setup();
+    render(<Backtests pollMs={10} />);
+    await screen.findByLabelText('Strategy preset');
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2025-06-01' } });
+    fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2025-01-01' } });
     await user.click(screen.getByRole('button', { name: 'Run backtest' }));
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('engine missing');
-    expect(alert).toHaveTextContent('no data');
+    expect(await screen.findByTestId('bt-errors')).toHaveTextContent('Start date must be before the end date.');
+    expect(posts(calls)).toHaveLength(0);
+    expect(calls.some((c) => c.url === '/api/backtests/estimate')).toBe(false);
+  });
+
+  it('rejects DTE out of order', async () => {
+    const calls = mockFetch(btRoutes());
+    const user = userEvent.setup();
+    render(<Backtests pollMs={10} />);
+    await screen.findByLabelText('Strategy preset');
+    fireEvent.change(screen.getByLabelText('DTE min'), { target: { value: '70' } });
+    await user.click(screen.getByRole('button', { name: 'Run backtest' }));
+    expect(await screen.findByTestId('bt-errors')).toHaveTextContent('min ≤ target ≤ max');
+    expect(posts(calls)).toHaveLength(0);
+  });
+
+  it('rejects an offset leg that no longer has an earlier leg to reference', async () => {
+    const calls = mockFetch(btRoutes());
+    const user = userEvent.setup();
+    render(<Backtests pollMs={10} />);
+    const select = await screen.findByLabelText('Strategy preset');
+    await waitFor(() => expect(within(select).getAllByRole('option')).toHaveLength(PRESETS.length));
+    await user.selectOptions(select, 'iron_condor');
+    await user.click(screen.getByRole('button', { name: 'Remove leg 1' })); // leg 2 (offset from leg 1) becomes leg 1
+    await user.click(screen.getByRole('button', { name: 'Run backtest' }));
+    expect(await screen.findByTestId('bt-errors')).toHaveTextContent('Leg 1: an offset must reference an earlier leg.');
+    expect(posts(calls)).toHaveLength(0);
+    // Only earlier legs are offered as references.
+    expect(within(screen.getByLabelText('Leg 3 offset from leg')).getAllByRole('option')).toHaveLength(2);
+  });
+
+  it('sends a normalized request, shows the estimate, polls until success and renders results', async () => {
+    let polls = 0;
+    const calls = mockFetch(btRoutes({
+      jobs: () => {
+        polls += 1;
+        return polls < 3
+          ? { body: job('running', { result: { progress: { pct: 23.5, day: '2025-03-04', trades: 4, open: 2, requests: 40 } } }) }
+          : { body: job('succeeded', { result: RESULT }) };
+      },
+    }));
+    const user = userEvent.setup();
+    render(<Backtests pollMs={15} />);
+    const select = await screen.findByLabelText('Strategy preset');
+    await waitFor(() => expect(within(select).getAllByRole('option')).toHaveLength(PRESETS.length));
+    await user.selectOptions(select, 'short_put');
+    fireEvent.change(screen.getByLabelText('Min IV (%)'), { target: { value: '15' } });
+    await waitFor(() => expect(screen.getByTestId('bt-estimate')).toHaveTextContent('~52 entries, ~260 data requests, ~2.5 min'),
+      { timeout: 2000 });
+    await user.click(screen.getByRole('button', { name: 'Run backtest' }));
+
+    await waitFor(() => expect(screen.getByTestId('bt-progress-text')).toHaveTextContent('23.5%'));
+    expect(screen.getByTestId('bt-progress-text')).toHaveTextContent('day 2025-03-04');
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+
+    const results = await screen.findByTestId('bt-results');
+    expect(within(results).getByTestId('metric-total_return')).toHaveTextContent('12.0%');
+    expect(within(results).getByTestId('metric-total_return')).toHaveTextContent('Benchmark 15.0%');
+    expect(within(results).getByTestId('metric-sharpe')).toHaveTextContent('1.23');
+    expect(within(results).getByTestId('metric-total_commissions')).toHaveTextContent('$270.40');
+    expect(within(results).getByRole('img', { name: /Equity curve from 2025-01-02 to 2025-12-31/ })).toBeInTheDocument();
+    const table = within(results).getByRole('table', { name: 'Trades' });
+    expect(within(table).getAllByRole('row')).toHaveLength(4);
+    expect(screen.getByText('End-of-day data means intraday stop breaches are not seen.')).toBeInTheDocument();
+
+    const body = JSON.parse(posts(calls)[0].opts.body);
+    expect(body).toMatchObject({ underlying: 'SPY', strategy: 'short_put', stock: null,
+      legs: [{ right: 'put', side: 'sell', ratio: 1, strike: { method: 'delta', value: 0.3 } }],
+      entry: { dte_target: 45, min_iv: 0.15, max_iv: null }, exit: { profit_target_pct: 50, max_hold_days: null },
+      sizing: { mode: 'fixed', contracts: 1, capital: 100000 } });
+    expect(polls).toBeGreaterThanOrEqual(3);
+  });
+
+  it('sorts, filters and expands trades', async () => {
+    mockFetch(btRoutes());
+    const user = userEvent.setup();
+    render(<Backtests pollMs={10} />);
+    await screen.findByLabelText('Strategy preset');
+    await user.click(screen.getByRole('button', { name: 'Run backtest' }));
+    // Re-query the table every time: the results can re-render (the recent-runs list refreshes after a
+    // run), and a held reference would then read a detached node. Generous timeout for loaded CI hosts.
+    await screen.findByRole('table', { name: 'Trades' }, { timeout: 5000 });
+    const table = () => screen.getByRole('table', { name: 'Trades' });
+    const pnls = () => within(table()).getAllByRole('row').slice(1).map((r) => r.querySelector('.bt-pnl').textContent);
+    await user.click(within(table()).getByRole('button', { name: /^P&L/ }));
+    await waitFor(() => expect(pnls()).toEqual(['-$300.00', '$50.00', '$112.40']));
+    await user.click(within(table()).getByRole('button', { name: /^P&L/ }));
+    await waitFor(() => expect(pnls()).toEqual(['$112.40', '$50.00', '-$300.00']));
+    await user.selectOptions(screen.getByLabelText('Filter by exit reason'), 'stop_loss');
+    await waitFor(() => expect(pnls()).toEqual(['-$300.00']));
+    await user.click(screen.getByRole('button', { name: 'Show legs for trade 2' }));
+    expect(screen.getByText('562.00')).toBeInTheDocument();
+    expect(screen.getByText('-0.160')).toBeInTheDocument();
+  });
+
+  it('shows the error of a failed job', async () => {
+    mockFetch(btRoutes({ jobs: () => ({ body: job('failed', { error: 'ThetaData terminal unreachable' }) }) }));
+    const user = userEvent.setup();
+    render(<Backtests pollMs={10} />);
+    await screen.findByLabelText('Strategy preset');
+    await user.click(screen.getByRole('button', { name: 'Run backtest' }));
+    expect(await screen.findByText(/ThetaData terminal unreachable/)).toBeInTheDocument();
+    expect(screen.queryByTestId('bt-results')).not.toBeInTheDocument();
+  });
+
+  it('cancels a running job', async () => {
+    const calls = mockFetch(btRoutes({ jobs: () => ({ body: job('running', { result: { progress: { pct: 5 } } }) }) }));
+    const user = userEvent.setup();
+    render(<Backtests pollMs={10} />);
+    await screen.findByLabelText('Strategy preset');
+    await user.click(screen.getByRole('button', { name: 'Run backtest' }));
+    await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/jobs/job1/cancel' && c.opts.method === 'POST')).toBe(true));
+  });
+
+  it('surfaces a 503 from the server and stops polling on unmount', async () => {
+    const calls = mockFetch(btRoutes({ post: () => ({ status: 503, body: { error: 'backtest_unavailable',
+      detail: 'Backtesting is not available.', blocked_by: ['no history provider'] } }) }));
+    const user = userEvent.setup();
+    render(<Backtests pollMs={10} />);
+    await screen.findByLabelText('Strategy preset');
+    await user.click(screen.getByRole('button', { name: 'Run backtest' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('no history provider');
+    expect(calls.some((c) => c.url.startsWith('/api/jobs/'))).toBe(false);
+  });
+
+  it('stops polling when unmounted', async () => {
+    const calls = mockFetch(btRoutes({ jobs: () => ({ body: job('running', { result: { progress: { pct: 5 } } }) }) }));
+    const user = userEvent.setup();
+    const { unmount } = render(<Backtests pollMs={10} />);
+    await screen.findByLabelText('Strategy preset');
+    await user.click(screen.getByRole('button', { name: 'Run backtest' }));
+    await waitFor(() => expect(calls.filter((c) => c.url === '/api/jobs/job1').length).toBeGreaterThan(0));
+    unmount();
+    const n = calls.length;
+    await new Promise((r) => setTimeout(r, 80));
+    expect(calls.length).toBe(n);
+  });
+
+  it('loads a past run and its config back into the form', async () => {
+    const config = { ...DEFAULTS, underlying: 'QQQ', strategy: 'iron_condor', legs: PRESETS[1].legs,
+      entry: { ...DEFAULTS.entry, min_iv: 0.2 } };
+    mockFetch(btRoutes({
+      history: [{ id: 'job1', status: 'succeeded', created_at: '2025-02-01T00:00:00Z', underlying: 'QQQ',
+        strategy: 'iron_condor', start: '2025-01-02', end: '2025-12-31', summary: { total_return: 0.08, trades: 52 } }],
+      jobs: () => ({ body: job('succeeded', { result: { ...RESULT, config } }) }),
+    }));
+    const user = userEvent.setup();
+    render(<Backtests pollMs={10} />);
+    await user.click(await screen.findByRole('button', { name: /QQQ iron condor/ }));
+    expect(await screen.findByTestId('bt-results')).toBeInTheDocument();
+    expect(screen.getByLabelText('Underlying')).toHaveValue('QQQ');
+    expect(screen.getByLabelText('Min IV (%)')).toHaveValue(20);
+    expect(screen.getByLabelText('Leg 4 side')).toHaveValue('buy');
   });
 });

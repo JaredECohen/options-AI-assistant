@@ -244,3 +244,17 @@ class IVDaily(Base):
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     batch_id: Mapped[str] = mapped_column(ForeignKey("ingest_batches.id"), nullable=False)
     __table_args__ = (UniqueConstraint("symbol", "date", "method", "provider", name="uq_iv_daily_natural"),)
+
+
+class ProviderCache(Base):
+    """Immutable historical provider responses, keyed by a hash of the request.
+    Backtests read the same chains and contract histories many times (reruns,
+    parameter changes); a history row for a past day never changes, so only
+    requests that end before today are stored and nothing here expires."""
+
+    __tablename__ = "provider_cache"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(default=utcnow, nullable=False)

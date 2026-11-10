@@ -44,7 +44,7 @@ default; `--generator anthropic` / `--judge claude` spend money and require `--a
 | `app/llm/` | Anthropic gateway, budgets, tools, validation |
 | `app/db/`, `migrations/` | Own Postgres schema (Alembic) |
 | `app/jobs/`, `app/worker.py` | Durable jobs and ingestion (worker entrypoint) |
-| `app/backtest/` | Backtest contract and metrics (engine blocked) |
+| `app/backtest/` | Options backtester on ThetaData end-of-day history (see `docs/BACKTESTING.md`) |
 | `app/integrations/` | MarketMosaic research client, course context |
 | `frontend/` | React/Vite SPA |
 | `eval/` | Golden-case eval |
