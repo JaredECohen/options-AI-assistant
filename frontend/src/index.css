@@ -424,3 +424,8 @@ button.linklike { width: auto; margin: 0; padding: 2px 4px; background: none; bo
   .bt-bars li { grid-template-columns: 90px 1fr auto; }
   .bt-actions button { width: 100%; }
 }
+
+/* Status notes (e.g. IV history being built) */
+.note { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; font-size: 13px; color: var(--muted); }
+.note-building { border-color: rgba(242, 176, 69, 0.45); color: #f2b045; }
+.note-failed { border-color: rgba(239, 111, 111, 0.45); color: #ef6f6f; }

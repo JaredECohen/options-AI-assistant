@@ -3,7 +3,7 @@
 // display their reason instead of a number.
 import { useRef, useState } from 'react';
 import { api, isAbort } from '../api.js';
-import { DataStatus, Empty, ErrorNote, Loading, Unavailable, fmt, pct } from './common.jsx';
+import { DataStatus, Empty, ErrorNote, Loading, Unavailable, fmt, pct, reasonText } from './common.jsx';
 
 export default function Analytics() {
   const [ticker, setTicker] = useState('');
@@ -51,6 +51,11 @@ export default function Analytics() {
       {s && !loading ? (
         <>
           <p><DataStatus status={summary.data_status} label={summary.data_status_label} provider={summary.provider} /></p>
+          {summary.iv_history && summary.iv_history.status !== 'ready' ? (
+            <p className={`note note-${summary.iv_history.status}`} role="status">
+              {summary.iv_history.detail} IV rank and percentile appear once it is done.
+            </p>
+          ) : null}
           <dl className="grid">
             <dt>30-day ATM IV</dt><dd><Unavailable metric={s.iv_30d} asPct /></dd>
             <dt>HV 10 / 20 / 60 / 252</dt>
@@ -74,7 +79,7 @@ export default function Analytics() {
             <thead><tr><th scope="col">Expiration</th><th scope="col">DTE</th><th scope="col">ATM IV</th></tr></thead>
             <tbody>{s.term_structure.map((t) => (
               <tr key={t.expiration}><td>{t.expiration}</td><td>{fmt(t.dte, 1)}</td>
-                <td>{t.atm_iv == null ? <span className="muted">n/a ({t.unavailable_reason})</span> : pct(t.atm_iv)}</td></tr>
+                <td>{t.atm_iv == null ? <span className="muted">n/a ({reasonText(t.unavailable_reason)})</span> : pct(t.atm_iv)}</td></tr>
             ))}</tbody>
           </table>
         </>

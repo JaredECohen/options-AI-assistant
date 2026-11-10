@@ -21,6 +21,35 @@ from app.integrations.marketmosaic import ResearchUnavailable
 from app.jobs import queue
 
 router = APIRouter()
+IV_BACKFILL_DAYS = 365
+
+
+def failure_code(exc: Exception) -> str:
+    """A stable, user-presentable code for a provider failure (never a class name)."""
+    from app.providers.options.base import ProviderUnavailable, QuoteUnavailable
+
+    if isinstance(exc, ProviderUnavailable):
+        return "market_data_unavailable"
+    if isinstance(exc, QuoteUnavailable):
+        return "quote_unavailable"
+    return getattr(exc, "code", None) or "error"
+
+
+def ensure_iv_history(state, ticker: str, iv_rank_reason: str) -> dict:
+    """IV rank and percentile need about a year of daily IV. Nothing schedules that
+    backfill on a single web service, so the first look at a ticker queues it once
+    (the key is shared with app.worker's schedule, so it never runs twice)."""
+    if iv_rank_reason != "insufficient_history":
+        return {"status": "ready"}
+    if state.settings.options_history_provider != "thetadata":
+        return {"status": "unavailable", "detail": "No historical options source is configured."}
+    key = f"backfill_iv_history:{ticker}:full"
+    job = queue.enqueue(state.db, "backfill_iv_history", key, {"ticker": ticker, "days": IV_BACKFILL_DAYS})
+    if job.status in ("queued", "running"):
+        return {"status": "building", "detail": "Building a year of daily IV history (one-time, about 15 minutes)."}
+    if job.status == "succeeded":
+        return {"status": "short", "detail": "History was built but covers too few trading days for a rank yet."}
+    return {"status": "failed", "detail": "The IV history backfill failed; it will be retried on a later visit."}
 TICKER_PATH = r"^[A-Za-z.]{1,10}$"
 TickerPath = Path(..., pattern=TICKER_PATH)
 MAX_LIVE_UNIVERSE = 10
@@ -35,7 +64,8 @@ async def ticker_analytics(request: Request, ticker: str = TickerPath, expiratio
                            principal: Principal = Depends(require("analytics"))):
     state = request.app.state
     snap = await state.snapshots.get(ticker)
-    body = {"summary": snap.as_json(), "conventions": state.analytics_cfg.conventions(), **_provenance(state.options_provider)}
+    body = {"summary": snap.as_json(), "conventions": state.analytics_cfg.conventions(),
+            "iv_history": ensure_iv_history(state, snap.ticker, snap.iv_rank.reason), **_provenance(state.options_provider)}
     if expiration:
         quotes = await state.options_provider.get_chain(ticker, expiration)
         now = dt.datetime.now(dt.UTC)
@@ -77,8 +107,9 @@ async def compare_tickers(body: CompareIn, request: Request, principal: Principa
         try:
             s = await state.snapshots.get(t)
         except Exception as exc:  # noqa: BLE001 - one bad ticker must not sink the table
-            errors.append({"ticker": t, "error": getattr(exc, "code", exc.__class__.__name__)})
+            errors.append({"ticker": t, "error": failure_code(exc)})
             continue
+        ensure_iv_history(state, s.ticker, s.iv_rank.reason)
         snaps.append(TickerSnapshot(s.ticker, s.as_of, "USD", s.data_status, s.underlying,
                                     [(x["dte"], x["atm_iv"]) for x in s.term if x["atm_iv"]], s.hv["hv20"], s.iv_rank, s.skew))
     return {**compare(snaps, body.target_dte, body.sort_by), "errors": errors}
@@ -94,9 +125,12 @@ async def _metrics(state, universe) -> dict:
     out = {}
     for t in universe:
         try:
-            out[t] = (await state.snapshots.get(t)).screener_row()
+            snap = await state.snapshots.get(t)
         except Exception as exc:  # noqa: BLE001
-            out[t] = {"_reasons": {f: getattr(exc, "code", exc.__class__.__name__) for f in screener.FIELDS}}
+            out[t] = {"_reasons": {f: failure_code(exc) for f in screener.FIELDS}}
+            continue
+        out[t] = snap.screener_row()
+        ensure_iv_history(state, snap.ticker, snap.iv_rank.reason)
     return out
 
 
