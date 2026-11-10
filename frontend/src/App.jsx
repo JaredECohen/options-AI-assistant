@@ -9,11 +9,13 @@ import ChainViewer from './components/ChainViewer.jsx';
 import Coach from './components/Coach.jsx';
 import Compare from './components/Compare.jsx';
 import Screener from './components/Screener.jsx';
+import StrategyFinder from './components/StrategyFinder.jsx';
 import { DataStatus, ErrorNote } from './components/common.jsx';
 import './index.css';
 
 const TABS = [
   ['coach', 'Coach'],
+  ['finder', 'Find a strategy'],
   ['chain', 'Chains'],
   ['builder', 'Builder & payoff'],
   ['compare', 'Compare'],
@@ -25,6 +27,19 @@ const TABS = [
 export function Shell({ config, signOut }) {
   const [tab, setTab] = useState('coach');
   const [seed, setSeed] = useState(null);
+  const [position, setPosition] = useState(null); // a whole structure for the builder
+  const [incoming, setIncoming] = useState(null); // a backtest request
+  const [focus, setFocus] = useState(null); // a chain to open
+  const openFromFinder = (kind, c) => {
+    const nonce = Date.now();
+    if (kind === 'builder') { setPosition({ ...c.links.builder, label: c.name, nonce }); setTab('builder'); }
+    if (kind === 'backtest') { setIncoming({ request: c.links.backtest, label: c.name, nonce }); setTab('backtests'); }
+    if (kind === 'chain') {
+      setFocus({ ...c.links.chain, strikes: c.legs.filter((l) => l.strike).map((l) => l.strike), label: c.name, nonce });
+      setTab('chain');
+    }
+    window.scrollTo?.({ top: 0, behavior: 'smooth' });
+  };
   const refs = useRef({});
   const onKey = (e, i) => {
     const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
@@ -62,12 +77,13 @@ export function Shell({ config, signOut }) {
           <div key={id} role="tabpanel" id={`panel-${id}`} aria-labelledby={`tab-${id}`} hidden={tab !== id}
                className={id === 'coach' ? '' : 'card'}>
             {id === 'coach' && <Coach />}
-            {id === 'chain' && tab === id && <ChainViewer onPick={(s) => { setSeed(s); setTab('builder'); }} />}
-            {id === 'builder' && <Builder seed={seed} />}
+            {id === 'finder' && <StrategyFinder onOpen={openFromFinder} />}
+            {id === 'chain' && tab === id && <ChainViewer focus={focus} onPick={(s) => { setSeed(s); setTab('builder'); }} />}
+            {id === 'builder' && <Builder seed={seed} position={position} />}
             {id === 'compare' && tab === id && <Compare />}
             {id === 'analytics' && tab === id && <Analytics />}
             {id === 'screener' && tab === id && <Screener />}
-            {id === 'backtests' && tab === id && <Backtests />}
+            {id === 'backtests' && tab === id && <Backtests incoming={incoming} />}
           </div>
         ))}
       </main>

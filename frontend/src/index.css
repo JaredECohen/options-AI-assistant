@@ -22,7 +22,8 @@
 
 body {
   margin: 0;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
   background:
     radial-gradient(ellipse at top, rgba(82, 224, 196, 0.08), transparent 60%),
     radial-gradient(ellipse at bottom right, rgba(82, 224, 196, 0.04), transparent 60%),
@@ -462,3 +463,76 @@ button.linklike { width: auto; margin: 0; padding: 2px 4px; background: none; bo
 .note { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; font-size: 13px; color: var(--muted); }
 .note-building { border-color: rgba(242, 176, 69, 0.45); color: var(--warn); }
 .note-failed { border-color: rgba(239, 111, 111, 0.45); color: var(--danger); }
+
+
+/* ---- Payoff chart (finder and builder) ---- */
+.payoff-chart { width: 100%; height: auto; display: block; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; margin: 10px 0; }
+.payoff-chart .pc-profit { fill: rgba(82, 224, 196, 0.16); }
+.payoff-chart .pc-loss { fill: rgba(239, 111, 111, 0.16); }
+.payoff-chart .pc-line { stroke: var(--accent); stroke-width: 2; }
+.payoff-chart .pc-zero { stroke: var(--muted); stroke-opacity: 0.5; }
+.payoff-chart .pc-spot { stroke: var(--text); stroke-opacity: 0.5; stroke-dasharray: 3 3; }
+.payoff-chart .pc-target { stroke: var(--warn); stroke-dasharray: 5 3; }
+.payoff-chart .pc-be { fill: var(--bg); stroke: var(--accent); stroke-width: 1.5; }
+.payoff-chart .pc-label, .payoff-chart .pc-axis text { fill: var(--muted); font-size: 11px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.payoff-chart .pc-label-target { fill: var(--warn); }
+
+/* ---- Tags ---- */
+.tag { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border); color: var(--muted); vertical-align: middle; }
+.tag-accent { color: var(--accent); border-color: rgba(43, 196, 164, 0.45); background: rgba(82, 224, 196, 0.08); }
+.tag-warn { color: var(--warn); border-color: rgba(242, 176, 69, 0.45); }
+
+/* ---- Strategy finder ---- */
+.sf h2 { margin-bottom: 4px; }
+.sf-form { display: grid; grid-template-columns: 140px 1fr auto; gap: 12px; align-items: end; margin-top: 14px; }
+.sf-form > button { width: auto; margin: 0; padding: 12px 22px; align-self: end; }
+.sf-form textarea { resize: vertical; min-height: 46px; }
+.sf .starter-list { margin: 10px 0 4px; }
+.sf-view { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: rgba(14, 21, 37, 0.6); }
+.sf-view-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.sf-view-head h3 { margin: 0 0 10px; font-size: 15px; }
+.sf-dir { display: flex; flex-wrap: wrap; margin: 0 0 12px; }
+.sf-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.sf-checks { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin-top: 10px; font-size: 13px; }
+.sf-checks label { display: inline-flex; align-items: center; gap: 6px; color: var(--text); margin: 0; }
+.sf-checks input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent-strong); }
+.sf-checks button { width: auto; margin: 0 0 0 auto; padding: 8px 14px; }
+.sf-context { margin: 18px 0 10px; font-size: 13px; color: var(--muted); }
+.sf-context span:not(.status) { padding-left: 10px; border-left: 1px solid var(--border); }
+.sf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+.sf-card { border: 1px solid var(--border); border-radius: 14px; padding: 16px; background: rgba(19, 27, 48, 0.7);
+  display: flex; flex-direction: column; }
+.sf-best { border-color: rgba(43, 196, 164, 0.55); box-shadow: 0 0 0 1px rgba(82, 224, 196, 0.12), 0 10px 30px rgba(5, 8, 16, 0.45); }
+.sf-card-head { display: flex; gap: 12px; align-items: flex-start; }
+.sf-card-head h3 { margin: 0; font-size: 16px; }
+.sf-rank { flex: none; width: 26px; height: 26px; border-radius: 999px; display: grid; place-items: center; font-size: 12px;
+  font-weight: 700; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+.sf-best .sf-rank { background: var(--accent-strong); color: var(--bg); border-color: transparent; }
+.sf-sub { margin: 2px 0 0; font-size: 12px; }
+.sf-fit { font-size: 13px; line-height: 1.5; margin: 10px 0 0; }
+.sf-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; margin: 4px 0 10px; }
+.sf-metrics div { min-width: 0; }
+.sf-metrics dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.sf-metrics dd { margin: 2px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sf-legs { margin: 0 0 6px; padding-left: 18px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.sf-toggle { align-self: flex-start; }
+.sf-explain { margin: 8px 0 0; font-size: 13px; line-height: 1.5; }
+.sf-explain dt { color: var(--accent); font-size: 12px; font-weight: 600; margin-top: 6px; }
+.sf-explain dd { margin: 2px 0 0; color: var(--text); }
+.sf-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: auto; padding-top: 12px; }
+.sf-actions button { margin: 0; padding: 9px 8px; font-size: 13px; }
+.sf-excluded { font-size: 12px; margin-top: 12px; }
+.sf-method { margin-top: 10px; font-size: 13px; }
+table.chain tr.picked > * { box-shadow: inset 0 0 0 9999px rgba(242, 176, 69, 0.12); }
+table.chain tr.picked > th[scope="row"] { color: var(--warn); }
+@media (max-width: 760px) {
+  .sf-form { grid-template-columns: 1fr; }
+  .sf-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sf-grid { grid-template-columns: 1fr; }
+  .sf-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ---- Numbers line up in every table ---- */
+table td, table th, .bt-card, .status { font-variant-numeric: tabular-nums; }

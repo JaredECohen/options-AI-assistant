@@ -89,7 +89,7 @@ export function defaultExpiration(list, now = new Date()) {
   return list.find((x) => dte(x, now) >= 7) || list[0] || '';
 }
 
-export default function ChainViewer({ onPick }) {
+export default function ChainViewer({ onPick, focus = null }) {
   const initial = useRef(loadView()).current;
   const [ticker, setTicker] = useState('');
   const [expirations, setExpirations] = useState([]);
@@ -106,9 +106,21 @@ export default function ChainViewer({ onPick }) {
 
   useEffect(() => saveView({ depth, side }), [depth, side]);
 
+  // Opened from the strategy finder: that ticker and expiry, with the structure's strikes marked.
+  useEffect(() => {
+    if (!focus) return;
+    setTicker(focus.ticker);
+    fetchExpirations(focus.ticker, focus.expiration);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.nonce]);
+  const picked = new Set(focus && data && data.expiration === focus.expiration ? focus.strikes || [] : []);
+
   const loadExpirations = async (e) => {
     e.preventDefault();
-    const t = ticker.trim().toUpperCase();
+    await fetchExpirations(ticker.trim().toUpperCase());
+  };
+
+  const fetchExpirations = async (t, preferred = null) => {
     if (!/^[A-Z.]{1,10}$/.test(t)) {
       setError({ message: 'Enter a valid ticker (letters only).' });
       return;
@@ -119,7 +131,8 @@ export default function ChainViewer({ onPick }) {
     try {
       const res = await api(`/api/expirations?ticker=${encodeURIComponent(t)}`, { signal: nextExpSignal() });
       setExpirations(res.expirations || []);
-      setExpiration(defaultExpiration(res.expirations || []));
+      const list = res.expirations || [];
+      setExpiration(preferred && list.includes(preferred) ? preferred : defaultExpiration(list));
     } catch (err) {
       if (!isAbort(err)) setError(err);
     } finally {
@@ -231,7 +244,8 @@ export default function ChainViewer({ onPick }) {
                     {data.chain.map((row) => {
                       const atm = row.strike === data.atm_strike;
                       return (
-                        <tr key={row.strike} className={atm ? 'atm' : undefined} ref={atm ? atmRef : undefined}
+                        <tr key={row.strike} className={[atm ? 'atm' : '', picked.has(row.strike) ? 'picked' : ''].join(' ').trim() || undefined}
+                            ref={atm ? atmRef : undefined}
                             aria-current={atm ? 'true' : undefined}>
                           {showCalls ? <Side q={row.call} itm={spot != null && row.strike < spot} /> : null}
                           <th scope="row">

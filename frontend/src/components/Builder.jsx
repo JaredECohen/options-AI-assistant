@@ -2,6 +2,7 @@
 // deterministic payoff result (exact bounds from the server; nothing computed here).
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import PayoffChart from './PayoffChart.jsx';
 import { DataStatus, Empty, ErrorNote, Loading, fmt, usd } from './common.jsx';
 
 const MAX_LEGS = 8;
@@ -77,24 +78,6 @@ function toApiLeg(l) {
            expiration: l.expiration, quantity: Number(l.quantity), premium };
 }
 
-function PayoffChart({ curve }) {
-  if (!curve || curve.length < 2) return null;
-  const W = 520, H = 180, pad = 24;
-  const xs = curve.map((p) => p.price), ys = curve.map((p) => p.payoff);
-  const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
-  const [y0, y1] = [Math.min(...ys, 0), Math.max(...ys, 0)];
-  const sx = (x) => pad + ((x - x0) / (x1 - x0 || 1)) * (W - 2 * pad);
-  const sy = (y) => H - pad - ((y - y0) / (y1 - y0 || 1)) * (H - 2 * pad);
-  const d = curve.map((p, i) => `${i ? 'L' : 'M'}${sx(p.price).toFixed(1)},${sy(p.payoff).toFixed(1)}`).join(' ');
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img"
-         aria-label="Payoff at expiration across underlying prices (display only; bounds above are exact)">
-      <line x1={pad} x2={W - pad} y1={sy(0)} y2={sy(0)} className="axis" />
-      <path d={d} className="curve" fill="none" />
-    </svg>
-  );
-}
-
 export function PayoffResult({ result }) {
   if (!result) return null;
   const c = result.computed;
@@ -112,7 +95,7 @@ export function PayoffResult({ result }) {
         <dt>{c.net_debit > 0 ? 'Net debit' : 'Net credit'}</dt><dd>{usd(c.net_debit > 0 ? c.net_debit : c.net_credit)}</dd>
         <dt>Underlying</dt><dd>{c.underlying_price == null ? 'not available' : `$${fmt(c.underlying_price)}`}</dd>
       </dl>
-      <PayoffChart curve={c.payoff_curve} />
+      <PayoffChart curve={c.payoff_curve} spot={c.underlying_price} breakevens={c.breakevens || []} />
       <details>
         <summary>Premiums used and conventions</summary>
         <ul>
@@ -130,7 +113,7 @@ export function PayoffResult({ result }) {
   );
 }
 
-export default function Builder({ seed }) {
+export default function Builder({ seed, position }) {
   const [ticker, setTicker] = useState('');
   const [legs, setLegs] = useState([newLeg()]);
   const [template, setTemplate] = useState('');
@@ -149,6 +132,20 @@ export default function Builder({ seed }) {
     setLegs((prev) => [...prev.filter((l) => l.strike !== '' || l.instrument === 'stock'),
       newLeg({ strike: seed.row.strike, expiration: seed.expiration })].slice(0, MAX_LEGS));
   }, [seed]);
+
+  useEffect(() => {
+    if (!position) return;
+    // A structure from the strategy finder. Premiums are left blank so they reprice
+    // from current quotes with the chosen fill convention.
+    setTicker(position.ticker);
+    setTemplate('');
+    setTemplateNote(position.label ? `Loaded "${position.label}" from the strategy finder. Premiums reprice from live quotes.` : '');
+    setLegs(position.legs.slice(0, MAX_LEGS).map((l) => newLeg({
+      instrument: l.instrument, side: l.side, quantity: l.quantity,
+      ...(l.instrument === 'option' ? { option_type: l.option_type, strike: l.strike, expiration: l.expiration } : {}),
+    })));
+    setResult(null);
+  }, [position]);
 
   useEffect(() => {
     const ctrl = new AbortController();
