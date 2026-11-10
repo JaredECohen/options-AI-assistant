@@ -1,7 +1,7 @@
 // T2/T3: position builder with strategy templates and editable legs, and the
 // deterministic payoff result (exact bounds from the server; nothing computed here).
 import { useEffect, useState } from 'react';
-import { api, isAbort } from '../api.js';
+import { api } from '../api.js';
 import { DataStatus, Empty, ErrorNote, Loading, fmt, usd } from './common.jsx';
 
 const MAX_LEGS = 8;
@@ -13,9 +13,19 @@ const newLeg = (over = {}) => ({
 
 const step = (s) => (s >= 200 ? 5 : s >= 50 ? 1 : 0.5);
 const near = (s, mult) => {
+  if (!(s > 0)) return ''; // no price, no strike: never invent one
   const st = step(s);
   return Math.round((s * mult) / st) * st;
 };
+
+// The listed expiry closest to ~30 calendar days out (templates are monthly-style trades).
+export function templateExpiration(list, now = new Date(), target = 30) {
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = (iso) => { const [y, m, d] = iso.split('-').map(Number); return (Date.UTC(y, m - 1, d) - today) / 86400000; };
+  const future = list.filter((x) => days(x) >= 1);
+  if (!future.length) return '';
+  return future.reduce((best, x) => (Math.abs(days(x) - target) < Math.abs(days(best) - target) ? x : best));
+}
 
 // Templates express structure only; strikes are starting points to edit.
 export const TEMPLATES = {
@@ -124,6 +134,7 @@ export default function Builder({ seed }) {
   const [ticker, setTicker] = useState('');
   const [legs, setLegs] = useState([newLeg()]);
   const [template, setTemplate] = useState('');
+  const [templateNote, setTemplateNote] = useState('');
   const [fill, setFill] = useState('mid');
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -147,15 +158,20 @@ export default function Builder({ seed }) {
 
   const applyTemplate = async (name) => {
     setTemplate(name);
+    setTemplateNote('');
     if (!name) return;
-    let spot = 100, exp = '';
+    // Strikes come only from a real price. A failed lookup used to fall back to $100,
+    // which built a SPY iron condor at 88/93/107/112 against a $752 stock.
+    let spot = null, exp = '';
     const t = ticker.trim().toUpperCase();
-    if (t) {
-      try {
-        spot = (await api(`/api/quote?ticker=${t}`)).price;
-        exp = (await api(`/api/expirations?ticker=${t}`)).expirations?.[2] || '';
-      } catch (err) {
-        if (!isAbort(err)) setError(err);
+    if (!t) {
+      setTemplateNote('Enter a ticker to fill strikes and the expiration from current prices.');
+    } else {
+      const [quote, exps] = await Promise.allSettled([api(`/api/quote?ticker=${t}`), api(`/api/expirations?ticker=${t}`)]);
+      if (quote.status === 'fulfilled' && quote.value.price > 0) spot = quote.value.price;
+      if (exps.status === 'fulfilled') exp = templateExpiration(exps.value.expirations || []);
+      if (spot === null) {
+        setTemplateNote(`No current price for ${t} right now, so strikes are left blank; enter them, or pick the template again.`);
       }
     }
     setLegs(TEMPLATES[name](spot, exp));
@@ -220,6 +236,7 @@ export default function Builder({ seed }) {
             </select>
           </div>
         </div>
+        {templateNote ? <p className="note" role="status">{templateNote}</p> : null}
         <table className="legs">
           <caption className="sr-only">Position legs</caption>
           <thead><tr><th>Type</th><th>Side</th><th>Call/Put</th><th>Strike</th><th>Expiration</th><th>Qty</th><th>Premium</th><th><span className="sr-only">Actions</span></th></tr></thead>
