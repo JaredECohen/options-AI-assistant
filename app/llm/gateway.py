@@ -177,6 +177,44 @@ class LLMGateway:
         self.breaker.success()
         return ensure_sections(text) if ensure_structured_response else text
 
+    async def extract(self, instruction: str, user_text: str, tool_name: str, schema: dict,
+                      turn: TurnContext | None = None, max_tokens: int = 600) -> dict | None:
+        """One forced, strict tool call that returns structured fields (e.g. a trading
+        view parsed from a sentence). Metered and budgeted like a chat turn. Returns
+        None whenever no model can answer (heuristic/disabled provider, no key, open
+        circuit, budget refusal, transport failure) so callers fall back to rules."""
+        if self.provider_name != "anthropic" or not self.settings.anthropic_api_key or not self.breaker.allow():
+            return None
+        turn = turn or current_turn.get() or TurnContext(user_id=None, correlation_id="")
+        try:
+            reservation = await asyncio.to_thread(self._admit, turn)
+        except LLMUnavailable:
+            return None
+        model = self.settings.anthropic_model
+        try:
+            resp = await self.client.messages.create(
+                model=model, max_tokens=max_tokens, system=instruction,
+                messages=[{"role": "user", "content": user_text}],
+                tools=[{"name": tool_name, "description": "Record the parsed fields.", "input_schema": schema,
+                        "strict": True}],
+                tool_choice={"type": "tool", "name": tool_name},
+            )
+        except Exception as exc:  # noqa: BLE001 - mapped to a safe code; caller falls back
+            code = classify_sdk_error(exc)
+            self._record(turn, model, "", f"error:{code}", None)
+            if code in TRANSPORT_FAILURES:
+                self.breaker.failure()
+            return None
+        finally:
+            if reservation is not None:
+                await asyncio.to_thread(repo.finish_turn, self.db, reservation)
+        self.breaker.success()
+        self._record(turn, model, getattr(resp, "model", "") or model, "ok", resp.usage)
+        for block in resp.content:
+            if getattr(block, "type", "") == "tool_use" and block.name == tool_name:
+                return dict(block.input or {})
+        return None
+
     # ------------------------------------------------------------------ internals
 
     async def _heuristic(self, user_text: str, structured: bool, attribution: Attribution, mode: str) -> str:

@@ -191,10 +191,11 @@ def create_app(
         routes_market,
         routes_public,
         routes_state,
+        routes_strategy,
     )
 
     for module in (routes_public, routes_chat, routes_state, routes_market, routes_analytics, routes_backtest,
-                   routes_contracts):
+                   routes_strategy, routes_contracts):
         app.include_router(module.router)
 
     _mount_frontend(app)
