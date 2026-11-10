@@ -77,9 +77,12 @@ export function dte(iso, now = new Date()) {
   return Math.round((Date.UTC(y, m - 1, d) - today) / 86400000);
 }
 const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// Short enough to fit the picker: "Mon Nov 16 · 7d", with the year only when it differs.
 export function expirationLabel(iso, now = new Date()) {
   const [y, m, d] = iso.split('-').map(Number);
-  return `${iso} (${WEEKDAY[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}) · ${dte(iso, now)}d`;
+  const year = y === now.getFullYear() ? '' : ` '${String(y).slice(2)}`;
+  return `${WEEKDAY[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]} ${MONTH[m - 1]} ${d}${year} · ${dte(iso, now)}d`;
 }
 // 0-1 DTE chains are mostly noise for learning; open on the first expiry a week or more out.
 export function defaultExpiration(list, now = new Date()) {

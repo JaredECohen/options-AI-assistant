@@ -8,7 +8,8 @@ describe('chain expirations', () => {
   const now = new Date(2026, 10, 9, 20, 0); // Mon 9 Nov 2026, 8 PM local
   it('labels each expiration with its weekday and days to expiry', () => {
     expect(dte('2026-11-10', now)).toBe(1);
-    expect(expirationLabel('2026-11-13', now)).toBe('2026-11-13 (Fri) · 4d');
+    expect(expirationLabel('2026-11-13', now)).toBe('Fri Nov 13 · 4d');
+    expect(expirationLabel('2028-01-21', now)).toBe("Fri Jan 21 '28 · 438d");
   });
   it('opens on the first expiry a week or more out, not a 0-1 DTE chain', () => {
     // Regression: ISSUE-006. The viewer opened on that day's already-expired 0DTE chain.
