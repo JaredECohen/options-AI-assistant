@@ -33,6 +33,7 @@ from app.analytics.chain import (
 from app.analytics.vol import Metric
 from app.db.models import IVDaily
 from app.db.session import Database
+from app.providers.options.base import ProviderUnavailable, QuoteUnavailable
 
 MAX_EXPIRIES = 3
 MIN_DTE, MAX_DTE = 7, 180
@@ -174,7 +175,13 @@ class SnapshotService:
         chosen = select_expiries(eligible)
         term, nearest, skew = [], None, Metric(None, "no_expiry_over_20_days")
         for exp, dte in chosen:
-            quotes = await p.get_chain(ticker, exp)
+            try:
+                quotes = await p.get_chain(ticker, exp)
+            except (ProviderUnavailable, QuoteUnavailable):
+                # One expiry the vendor will not price must not blank the whole page.
+                term.append({"expiration": exp, "dte": round(dte, 2), "atm_iv": None,
+                             "unavailable_reason": "chain_unavailable"})
+                continue
             enriched = enrich_chain(quotes, underlying, exp, now, self.cfg)
             T = dte / 365
             atm = atm_iv(enriched, forward_price(underlying, T, self.cfg))
