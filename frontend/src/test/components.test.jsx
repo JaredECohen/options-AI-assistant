@@ -436,14 +436,17 @@ describe('Backtests', () => {
     render(<Backtests pollMs={10} />);
     await screen.findByLabelText('Strategy preset');
     await user.click(screen.getByRole('button', { name: 'Run backtest' }));
-    const table = await screen.findByRole('table', { name: 'Trades' });
-    const pnls = () => within(table).getAllByRole('row').slice(1).map((r) => r.querySelector('.bt-pnl').textContent);
-    await user.click(within(table).getByRole('button', { name: /^P&L/ }));
-    expect(pnls()).toEqual(['-$300.00', '$50.00', '$112.40']);
-    await user.click(within(table).getByRole('button', { name: /^P&L/ }));
-    expect(pnls()).toEqual(['$112.40', '$50.00', '-$300.00']);
+    // Re-query the table every time: the results can re-render (the recent-runs list refreshes after a
+    // run), and a held reference would then read a detached node. Generous timeout for loaded CI hosts.
+    await screen.findByRole('table', { name: 'Trades' }, { timeout: 5000 });
+    const table = () => screen.getByRole('table', { name: 'Trades' });
+    const pnls = () => within(table()).getAllByRole('row').slice(1).map((r) => r.querySelector('.bt-pnl').textContent);
+    await user.click(within(table()).getByRole('button', { name: /^P&L/ }));
+    await waitFor(() => expect(pnls()).toEqual(['-$300.00', '$50.00', '$112.40']));
+    await user.click(within(table()).getByRole('button', { name: /^P&L/ }));
+    await waitFor(() => expect(pnls()).toEqual(['$112.40', '$50.00', '-$300.00']));
     await user.selectOptions(screen.getByLabelText('Filter by exit reason'), 'stop_loss');
-    expect(pnls()).toEqual(['-$300.00']);
+    await waitFor(() => expect(pnls()).toEqual(['-$300.00']));
     await user.click(screen.getByRole('button', { name: 'Show legs for trade 2' }));
     expect(screen.getByText('562.00')).toBeInTheDocument();
     expect(screen.getByText('-0.160')).toBeInTheDocument();
