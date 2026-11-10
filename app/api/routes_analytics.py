@@ -19,6 +19,7 @@ from app.db import repo
 from app.integrations import course_context
 from app.integrations.marketmosaic import ResearchUnavailable
 from app.jobs import queue
+from app.providers.options.base import ProviderUnavailable, QuoteUnavailable
 
 router = APIRouter()
 IV_BACKFILL_DAYS = 365
@@ -74,6 +75,28 @@ async def ticker_analytics(request: Request, ticker: str = TickerPath, expiratio
     return body
 
 
+SURFACE_TARGET_DTES = (7, 30, 60, 90, 180, 365)
+SURFACE_MAX_SPREAD = 0.5  # (ask - bid) / mid
+
+
+def surface_expiries(eligible: list[tuple[str, float]], n: int) -> list[str]:
+    """Expiries spread across the term structure: the one nearest each target DTE.
+    "The first n" were all in one week on tickers with daily expirations (SPY)."""
+    chosen: list[str] = []
+    for target in SURFACE_TARGET_DTES:
+        free = [(abs(d - target), e) for e, d in eligible if e not in chosen]
+        if free and len(chosen) < n:
+            chosen.append(min(free)[1])
+    return sorted(chosen)
+
+
+def surface_quality(c: dict) -> bool:
+    """Only quotes a smile can be fitted to: a real bid and a spread under 50% of mid.
+    Far-wing 0.01-bid contracts produced 'dislocations' like a 990 SPY call at 46% IV."""
+    bid, spread = c.get("bid"), c.get("spread_pct")
+    return bid is not None and bid > 0 and spread is not None and spread <= SURFACE_MAX_SPREAD
+
+
 @router.get("/api/analytics/{ticker}/surface")
 async def surface(request: Request, ticker: str = TickerPath, max_expiries: int = Query(4, ge=1, le=6),
                   principal: Principal = Depends(require("analytics"))):
@@ -81,13 +104,18 @@ async def surface(request: Request, ticker: str = TickerPath, max_expiries: int 
     p, cfg = state.options_provider, state.analytics_cfg
     now = dt.datetime.now(dt.UTC)
     underlying = await p.get_underlying_price(ticker)
-    exps = [e for e in await p.list_expirations(ticker) if 7 <= time_to_expiry(e, now) * 365 <= 365][:max_expiries]
+    listed = [(e, time_to_expiry(e, now) * 365) for e in await p.list_expirations(ticker)]
+    exps = surface_expiries([(e, d) for e, d in listed if 7 <= d <= 365], max_expiries)
     slices = []
     for exp in exps:
         T = time_to_expiry(exp, now)
         F = forward_price(underlying, T, cfg)
-        enriched = enrich_chain(await p.get_chain(ticker, exp), underlying, exp, now, cfg)
-        pts = [(math.log(k / F), iv, "put" if k < F else "call", k) for k, iv in otm_iv_points(enriched, F)]
+        try:
+            enriched = enrich_chain(await p.get_chain(ticker, exp), underlying, exp, now, cfg)
+        except (ProviderUnavailable, QuoteUnavailable):
+            continue  # one expiry the vendor will not price must not blank the surface
+        liquid = [c for c in enriched if surface_quality(c)]
+        pts = [(math.log(k / F), iv, "put" if k < F else "call", k) for k, iv in otm_iv_points(liquid, F)]
         slices.append(ExpirySlice(exp, T * 365, pts))
     return {"ticker": ticker.upper(), "as_of": now.isoformat(), "underlying_price": underlying,
             "surface": build_surface(slices), "conventions": cfg.conventions(), **_provenance(p)}

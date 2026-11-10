@@ -284,3 +284,18 @@ def test_failures_are_reported_as_codes_not_class_names(tmp_path):
     assert failure_code(ProviderUnavailable("x")) == "market_data_unavailable"
     assert failure_code(QuoteUnavailable("x")) == "quote_unavailable"
     assert failure_code(RuntimeError("x")) == "error"
+
+
+def test_surface_spreads_expiries_and_fits_only_liquid_quotes(tmp_path):
+    # Regression: ISSUE-012. With SPY dailies the surface's "first four" expiries were all in
+    # one week, and 0.01-bid far-wing calls showed up as 46%-IV "dislocations".
+    from app.api.routes_analytics import surface_expiries, surface_quality
+
+    daily = [(f"d{i}", float(i)) for i in range(7, 400)]
+    assert surface_expiries(daily, 4) == sorted(["d7", "d30", "d60", "d90"])
+    assert surface_quality({"bid": 1.0, "spread_pct": 0.05})
+    assert not surface_quality({"bid": 0.0, "spread_pct": 2.0})
+    assert not surface_quality({"bid": 0.01, "spread_pct": 0.67})
+    c, keys = client(tmp_path)
+    r = c.get("/api/analytics/SPY/surface", headers=auth(keys))
+    assert r.status_code == 200 and r.json()["surface"]
