@@ -2,7 +2,7 @@
 // saved (user-scoped) screens. The server validates the DSL; errors are shown verbatim.
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { Empty, ErrorNote, Loading, fmt } from './common.jsx';
+import { Empty, ErrorNote, Loading, fmt, reasonText } from './common.jsx';
 
 const OPS = ['<', '<=', '>', '>='];
 
@@ -101,7 +101,7 @@ export default function Screener() {
           <h3>Did not pass</h3>
           {result.rejected.length === 0 ? <Empty>None.</Empty> : (
             <ul>{result.rejected.map((r) => (
-              <li key={r.ticker}>{r.ticker}: {r.failed.map((f) => `${f.field} (${f.reason})`).join(', ')}</li>
+              <li key={r.ticker}>{r.ticker}: {r.failed.map((f) => `${f.field.replace(/_/g, ' ')} (${reasonText(f.reason)})`).join(', ')}</li>
             ))}</ul>
           )}
         </>

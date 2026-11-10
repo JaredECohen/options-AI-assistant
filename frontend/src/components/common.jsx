@@ -54,10 +54,25 @@ export const usd = (v) =>
       ? '—'
       : `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// Server reason codes, in words. Unknown codes fall back to the code with spaces.
+const REASONS = {
+  insufficient_history: 'needs about a year of IV history',
+  no_price_history: 'no price history',
+  no_expiry_over_20_days: 'no expiry 20+ days out',
+  chain_unavailable: 'chain unavailable',
+  market_data_unavailable: 'market data unavailable',
+  quote_unavailable: 'no quote',
+  not_comparable: 'not comparable',
+};
+export function reasonText(code) {
+  if (!code) return 'unavailable';
+  return REASONS[code] || String(code).replace(/_/g, ' ');
+}
+
 export function Unavailable({ metric, digits = 2, asPct = false }) {
   if (!metric) return '—';
   if (metric.value === null || metric.value === undefined) {
-    return <span className="muted" title={metric.unavailable_reason || ''}>n/a ({metric.unavailable_reason || 'unavailable'})</span>;
+    return <span className="muted" title={metric.unavailable_reason || ''}>n/a ({reasonText(metric.unavailable_reason)})</span>;
   }
   return asPct ? pct(metric.value) : fmt(metric.value, digits);
 }
