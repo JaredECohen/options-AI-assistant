@@ -303,6 +303,9 @@ class ThetaDataProvider:
             log.info("thetadata_invalid_argument %s", details[:200])
             return QuoteUnavailable("ThetaData rejected the request parameters.")
         log.info("thetadata_error kind=%s code=%s details=%s", kind, name or "-", details[:200])
+        if kind in ("ConnectTimeout", "ConnectError", "ReadTimeout", "RemoteProtocolError", "ReadError"):
+            # Network blips, seen when the library re-authenticates; a retry clears them.
+            return TransientUnavailable(f"ThetaData connection failed ({kind}); try again.")
         if name:
             return ProviderUnavailable(f"ThetaData returned {name}.")
         return ProviderUnavailable(f"ThetaData request failed ({kind}).")
@@ -485,6 +488,9 @@ class ThetaDataProvider:
     async def get_daily_bars(self, ticker: str, start: dt.date, end: dt.date) -> list[tuple[dt.date, float]]:
         # ThetaData refuses ranges over 365 days ("Too many days between start and end
         # date; max 365 days allowed"); analytics asks for 400 so HV252 has a full window.
+        # ThetaData's calendar is New York's: after ~7 PM ET a UTC "today" is tomorrow there and
+        # the whole request is refused ("Date range contains future date").
+        end = min(end, dt.datetime.now(NY).date())
         rows: list[dict] = []
         lo = start
         while lo <= end:

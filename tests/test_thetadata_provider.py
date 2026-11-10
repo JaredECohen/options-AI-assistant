@@ -524,3 +524,44 @@ async def test_daily_bars_split_ranges_over_the_vendors_365_day_limit():
     bars = await p.get_daily_bars("SPY", dt.date(2025, 10, 5), dt.date(2026, 11, 9))
     assert len(seen) == 2 and seen[0][1] + dt.timedelta(days=1) == seen[1][0]
     assert [d for d, _c in bars] == [seen[0][1], dt.date(2026, 11, 9)]
+
+
+async def test_daily_bars_never_ask_for_a_new_york_future_date():
+    # Regression: ISSUE-013. After ~7 PM ET, a UTC 'today' is tomorrow in New York and ThetaData
+    # refuses the range ("Date range contains future date"), so HV failed every evening.
+    seen = []
+
+    class Bars(FakeClient):
+        def __getattr__(self, method):
+            def call(**kw):
+                seen.append(kw["end_date"])
+                return lib_rows([{"symbol": "SPY", "close": 700.0,
+                                  "last_trade": dt.datetime.combine(kw["end_date"], dt.time(16), NYZ)}])
+            return call
+
+    p, _ = lib_provider(Bars())
+    ny_today = dt.datetime.now(NYZ).date()
+    await p.get_daily_bars("SPY", ny_today - dt.timedelta(days=10), ny_today + dt.timedelta(days=1))
+    assert max(seen) == ny_today
+
+
+async def test_connection_blips_are_retried():
+    class Blip(Exception):
+        pass
+
+    Blip.__name__ = "ConnectTimeout"
+    client = FakeClient({"option_list_expirations": [{"symbol": "SPY", "expiration": dt.date(2099, 1, 15)}]})
+    calls = {"n": 0}
+    real = client.__getattr__("option_list_expirations")
+
+    class Flaky:
+        def __getattr__(self, method):
+            def call(**kw):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise Blip("connect timeout")
+                return real(**kw)
+            return call
+
+    p, _ = lib_provider(Flaky())
+    assert await p.list_expirations_all("SPY") == ["2099-01-15"] and calls["n"] == 2
