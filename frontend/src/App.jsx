@@ -50,11 +50,17 @@ export function Shell({ config, signOut }) {
   };
   return (
     <div>
-      <header>
+      <header className="app-header">
         <div className="header-content">
-          <div>
-            <h1>Options Coach AI</h1>
-            <p>Options strategies, explained simply. Educational only; not investment advice.</p>
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
+                   strokeLinecap="round" strokeLinejoin="round"><path d="M3 17l5-5 4 4 8-9" /><path d="M14 7h6v6" /></svg>
+            </span>
+            <div>
+              <h1>Options Coach</h1>
+              <p className="brand-kicker">by MarketMosaic</p>
+            </div>
           </div>
           <div className="header-actions">
             <DataStatus status={config.market_data.data_status} label={config.market_data.label} provider={config.market_data.provider} />
@@ -87,6 +93,10 @@ export function Shell({ config, signOut }) {
           </div>
         ))}
       </main>
+      <footer className="app-footer">
+        <p>Options Coach is for education and research only. Prices, payoffs and probabilities are calculations from
+          market data and stated assumptions, not recommendations or personalised investment advice.</p>
+      </footer>
     </div>
   );
 }

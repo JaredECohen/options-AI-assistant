@@ -31,10 +31,12 @@ body {
   color: var(--text);
 }
 
-header {
-  padding: 24px;
+.app-header {
+  padding: 14px 24px 0;
   border-bottom: 1px solid var(--border);
-  background: rgba(14, 21, 37, 0.9);
+  background: rgba(10, 15, 28, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   position: sticky;
   top: 0;
   z-index: 10;
@@ -46,14 +48,25 @@ header {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+  max-width: 1180px;
+  margin: 0 auto;
 }
 
 .header-actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand-mark { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; color: var(--accent);
+  background: rgba(82, 224, 196, 0.1); border: 1px solid rgba(43, 196, 164, 0.4); }
+.brand h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
+.brand-kicker { margin: 1px 0 0; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.app-header .tabs { max-width: 1180px; margin: 12px auto 0; padding-bottom: 10px; }
+.app-footer { max-width: 1180px; margin: 8px auto 32px; padding: 16px 24px 0; border-top: 1px solid var(--border); }
+.app-footer p { font-size: 12px; line-height: 1.5; }
 
 h1 {
   margin: 0 0 8px 0;
@@ -72,7 +85,7 @@ p {
   gap: 24px;
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  max-width: 980px;
+  max-width: 1180px;
   margin: 0 auto;
 }
 
@@ -539,3 +552,20 @@ table.chain tr.picked > th[scope="row"] { color: var(--warn); }
 
 /* ---- Numbers line up in every table ---- */
 table td, table th, .bt-card, .status { font-variant-numeric: tabular-nums; }
+
+/* ---- Page heads ---- */
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.page-head h2 { margin: 0 0 4px; }
+.page-head .header-actions button { margin: 0; }
+.coach-stack { display: grid; gap: 18px; }
+
+/* ---- Phone layout ---- */
+@media (max-width: 760px) {
+  .app-header { padding: 10px 14px 0; }
+  .app-header .tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-top: 10px; padding-bottom: 8px; }
+  .app-header .tabs::-webkit-scrollbar { display: none; }
+  .app-header .tab { flex: none; padding: 7px 12px; }
+  .container { padding: 14px; }
+  .sf-actions { grid-template-columns: 1fr; }
+  .page-head { align-items: flex-start; }
+}
