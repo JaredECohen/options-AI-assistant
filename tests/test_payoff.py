@@ -181,3 +181,31 @@ def test_chart_curve_passes_through_zero_and_strikes():
     prices = [p["price"] for p in c["payoff_curve"]]
     assert 0.0 in prices and 100.0 in prices and 95.0 in prices
     assert min(p["payoff"] for p in c["payoff_curve"]) == -9500.0
+
+
+async def test_premiums_for_all_legs_come_from_one_chain_read():
+    # Regression: ISSUE-010 (QA 2026-11-09). Each blank-premium leg re-fetched the whole chain;
+    # a 4-leg SPY condor took 41 s live.
+    import datetime as _dt
+
+    from app.core.payoff import PayoffInputError, resolve_premiums
+    from app.models import OptionLeg
+    from app.providers.options.mock import MockOptionsProvider
+
+    class Counting(MockOptionsProvider):
+        chains = 0
+
+        async def get_chain(self, ticker, expiration):
+            Counting.chains += 1
+            return await super().get_chain(ticker, expiration)
+
+    p = Counting(today=_dt.date(2026, 11, 9))
+    exp = (await p.list_expirations("SPY"))[0]
+    strikes = sorted({q.strike for q in await p.get_chain("SPY", exp)})
+    Counting.chains = 0
+    legs = [OptionLeg(option_type=t, side=s, strike=k, expiration=exp) for t, s, k in
+            [("put", "buy", strikes[2]), ("put", "sell", strikes[5]), ("call", "sell", strikes[-6]), ("call", "buy", strikes[-3])]]
+    resolved, used, _ = await resolve_premiums("SPY", legs, p)
+    assert Counting.chains == 1 and all(r.premium is not None for r in resolved) and len(used) == 4
+    with pytest.raises(PayoffInputError, match="not in the chain"):
+        await resolve_premiums("SPY", [OptionLeg(option_type="call", side="buy", strike=12345, expiration=exp)], p)

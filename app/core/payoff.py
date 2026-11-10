@@ -80,6 +80,16 @@ async def resolve_premiums(
     """Fill in missing premiums from the provider and record their provenance."""
     validate_same_expiration(legs)
     underlying = await provider.get_underlying_price(ticker)
+    # Every option leg shares one expiration (checked above), so read that chain once.
+    # Asking per leg re-fetched the whole chain each time: a 4-leg condor took 41 s live.
+    unpriced = [leg for leg in legs if isinstance(leg, OptionLeg) and leg.premium is None]
+    chain_index: dict[tuple[str, float], Any] = {}
+    if unpriced:
+        try:
+            chain = await provider.get_chain(ticker, unpriced[0].expiration)
+        except QuoteUnavailable as exc:
+            raise PayoffInputError("quote_unavailable", str(exc)) from exc
+        chain_index = {(q.option_type, round(float(q.strike), 4)): q for q in chain}
     premiums_used: list[dict] = []
     resolved: list[OptionLeg | StockLeg] = []
     for leg in legs:
@@ -88,10 +98,11 @@ async def resolve_premiums(
             premium = float(leg.premium)
             record.update(premium=premium, premium_source="user_entered")
         elif isinstance(leg, OptionLeg):
-            try:
-                quote = await provider.get_option_quote(ticker, leg.expiration, leg.strike, leg.option_type)
-            except QuoteUnavailable as exc:
-                raise PayoffInputError("quote_unavailable", str(exc)) from exc
+            quote = chain_index.get((leg.option_type, round(float(leg.strike), 4)))
+            if quote is None:
+                raise PayoffInputError(
+                    "quote_unavailable",
+                    f"{ticker.upper()} {leg.expiration} {float(leg.strike):g} {leg.option_type} is not in the chain.")
             premium = premium_from_quote(quote, leg.side, convention)
             record.update(
                 premium=round(premium, 4),
