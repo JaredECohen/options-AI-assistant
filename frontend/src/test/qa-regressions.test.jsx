@@ -43,3 +43,19 @@ describe('builder templates', () => {
     expect(templateExpiration(['2026-11-09'], now)).toBe('');
   });
 });
+
+describe('chat markdown', () => {
+  it('renders model markdown as elements and never as raw markup', async () => {
+    // Regression: ISSUE-008. Answers rendered as raw monospace text: "**Summary:**", "- item".
+    const { render, screen } = await import('@testing-library/react');
+    const { default: Markdown, blocks } = await import('../components/Markdown.jsx');
+    const text = '**Summary:** a bull call spread.\n\n- Max profit: width - debit\n- Max loss: debit\n\nSetup: buy `750C`, sell 790C\n<img src=x onerror=alert(1)>';
+    const { container } = render(<Markdown text={text} />);
+    expect(container.querySelector('strong').textContent).toBe('Summary:');
+    expect(container.querySelectorAll('li')).toHaveLength(2);
+    expect(container.querySelector('code').textContent).toBe('750C');
+    expect(container.querySelector('img')).toBeNull(); // markup is text, not HTML
+    expect(screen.getByText(/<img src=x/)).toBeInTheDocument();
+    expect(blocks('1. a\n2. b')[0]).toMatchObject({ type: 'list', ordered: true, items: ['a', 'b'] });
+  });
+});

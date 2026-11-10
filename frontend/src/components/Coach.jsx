@@ -1,6 +1,7 @@
 // Strategy explainer + chat (the original OptionsCoach UI). Conversations are
 // server-owned; every answer shows who produced it (deterministic, model, demo or fallback).
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Markdown from './Markdown.jsx';
 import { api, errorMessage } from '../api.js';
 
 const viewToStrategies = {
@@ -308,10 +309,20 @@ export default function Coach() {
           <div className="pill">Chat</div>
           <div style={{ marginTop: '12px' }}>
             <div className="chat-log" ref={chatLogRef} aria-live="polite" aria-label="Conversation">
+              {messages.length === 0 ? (
+                <div className="chat-empty">
+                  <p>Ask about a strategy, a market view, or how strikes and expirations change a payoff.</p>
+                  <div className="starter-list">
+                    {exampleQuestions.slice(0, 3).map((q) => (
+                      <button key={q} type="button" className="starter" onClick={() => setMessage(q)}>{q}</button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {messages.map((msg, idx) => (
                 <div key={`${idx}-${msg.text.slice(0, 8)}`} className={`message${msg.meta?.user ? ' user' : ''}${msg.meta?.error ? ' error' : ''}`}
                      role={msg.meta?.error ? 'alert' : undefined}>
-                  {msg.text}
+                  {msg.meta?.user || msg.meta?.error ? msg.text : <Markdown text={msg.text} />}
                   {msg.meta?.servedBy ? <div className="served-by">{servedByLabel(msg.meta.servedBy)}</div> : null}
                 </div>
               ))}
