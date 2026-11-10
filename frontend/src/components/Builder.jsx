@@ -78,6 +78,18 @@ function toApiLeg(l) {
            expiration: l.expiration, quantity: Number(l.quantity), premium };
 }
 
+// Focus the server's wide curve on the strikes and today's price (+/- 15%).
+function zoom(curve, c) {
+  if (!curve) return curve;
+  const strikes = (c.inputs_used?.legs || []).filter((l) => l.strike).map((l) => Number(l.strike));
+  const anchors = [c.underlying_price, ...strikes, ...(c.breakevens || [])].filter(Number.isFinite);
+  if (!anchors.length) return curve;
+  const lo = Math.min(...anchors) * 0.85;
+  const hi = Math.max(...anchors) * 1.15;
+  const inside = curve.filter((p) => p.price >= lo && p.price <= hi);
+  return inside.length >= 2 ? inside : curve;
+}
+
 export function PayoffResult({ result }) {
   if (!result) return null;
   const c = result.computed;
@@ -95,7 +107,7 @@ export function PayoffResult({ result }) {
         <dt>{c.net_debit > 0 ? 'Net debit' : 'Net credit'}</dt><dd>{usd(c.net_debit > 0 ? c.net_debit : c.net_credit)}</dd>
         <dt>Underlying</dt><dd>{c.underlying_price == null ? 'not available' : `$${fmt(c.underlying_price)}`}</dd>
       </dl>
-      <PayoffChart curve={c.payoff_curve} spot={c.underlying_price} breakevens={c.breakevens || []} />
+      <PayoffChart curve={zoom(c.payoff_curve, c)} spot={c.underlying_price} breakevens={c.breakevens || []} />
       <details>
         <summary>Premiums used and conventions</summary>
         <ul>

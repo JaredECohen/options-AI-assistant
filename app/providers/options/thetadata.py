@@ -302,6 +302,7 @@ class ThetaDataProvider:
         if name == "INVALID_ARGUMENT":
             log.info("thetadata_invalid_argument %s", details[:200])
             return QuoteUnavailable("ThetaData rejected the request parameters.")
+        log.info("thetadata_error kind=%s code=%s details=%s", kind, name or "-", details[:200])
         if name:
             return ProviderUnavailable(f"ThetaData returned {name}.")
         return ProviderUnavailable(f"ThetaData request failed ({kind}).")

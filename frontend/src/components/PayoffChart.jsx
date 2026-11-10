@@ -2,10 +2,31 @@ import { useId } from 'react';
 
 // Expiration payoff chart: profit area above zero, loss area below, with the current
 // price, an optional target and the breakevens marked. Pure SVG, no dependencies.
+// Exact expiration P&L of option/stock legs at price S (premiums per share, 100 shares/contract).
+export function legsPayoff(legs, S) {
+  return legs.reduce((sum, l) => {
+    const prem = Number(l.premium) || 0;
+    if (l.instrument === 'stock') return sum + (l.side === 'buy' ? S - prem : prem - S) * Number(l.quantity || 0);
+    const k = Number(l.strike);
+    const intrinsic = l.option_type === 'call' ? Math.max(S - k, 0) : Math.max(k - S, 0);
+    const units = Number(l.quantity || 1) * Number(l.multiplier || 100);
+    return sum + (l.side === 'buy' ? intrinsic - prem : prem - intrinsic) * units;
+  }, 0);
+}
+
+// Points over [lo, hi] including every strike, so kinks are exact rather than sampled.
+export function curveFromLegs(legs, lo, hi, steps = 120) {
+  const xs = new Set();
+  for (let i = 0; i <= steps; i += 1) xs.add(lo + ((hi - lo) * i) / steps);
+  legs.forEach((l) => { if (l.strike >= lo && l.strike <= hi) xs.add(Number(l.strike)); });
+  return [...xs].sort((a, b) => a - b).map((price) => ({ price, payoff: legsPayoff(legs, price) }));
+}
+
 const fmtUsd = (v) => `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
-export default function PayoffChart({ curve, spot, target, breakevens = [], height = 200, compact = false }) {
+export default function PayoffChart({ curve: given, legs, domain, spot, target, breakevens = [], height = 200, compact = false }) {
   const uid = useId().replace(/:/g, '');
+  const curve = legs && domain ? curveFromLegs(legs, domain[0], domain[1]) : given;
   if (!curve || curve.length < 2) return null;
   const W = 560;
   const H = height;
@@ -49,7 +70,7 @@ export default function PayoffChart({ curve, spot, target, breakevens = [], heig
       {!compact ? (
         <g className="pc-axis">
           <text x={padL - 6} y={sy(y1) + 4} textAnchor="end">{fmtUsd(y1)}</text>
-          <text x={padL - 6} y={zero + 4} textAnchor="end">$0</text>
+          {Math.abs(zero - sy(y1)) > 14 && Math.abs(zero - sy(y0)) > 14 ? <text x={padL - 6} y={zero + 4} textAnchor="end">$0</text> : null}
           {y0 < 0 ? <text x={padL - 6} y={sy(y0) + 4} textAnchor="end">{fmtUsd(y0)}</text> : null}
           <text x={padL} y={H - 8}>{fmtUsd(x0)}</text>
           <text x={W - padR} y={H - 8} textAnchor="end">{fmtUsd(x1)}</text>

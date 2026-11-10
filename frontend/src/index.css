@@ -356,9 +356,10 @@ table.chain th[scope="row"] { text-align: center; }
    <thead> let scrolled rows show through between the two header rows. */
 .chain-wrap table.chain { border-collapse: separate; border-spacing: 0; }
 table.chain thead th { position: sticky; z-index: 2; background: var(--panel); }
-table.chain thead tr:first-child th { top: 0; height: 26px; text-align: center; color: var(--accent);
-  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
-table.chain thead tr:nth-child(2) th { top: 26px; }
+table.chain thead tr:first-child th { top: 0; height: 26px; padding-top: 0; padding-bottom: 0; line-height: 26px;
+  box-sizing: border-box; text-align: center; color: var(--accent); font-size: 11px; letter-spacing: 0.06em;
+  text-transform: uppercase; border-bottom: 0; }
+table.chain thead tr:nth-child(2) th { top: 26px; box-shadow: 0 1px 0 var(--border); }
 .status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 table.chain td.itm { background: rgba(148, 163, 184, 0.09); }
 table.chain tr.atm > * { background: rgba(82, 224, 196, 0.16); border-top: 1px solid var(--accent); border-bottom: 1px solid var(--accent); }
@@ -486,7 +487,9 @@ button.linklike { width: auto; margin: 0; padding: 2px 4px; background: none; bo
 
 /* ---- Strategy finder ---- */
 .sf h2 { margin-bottom: 4px; }
-.sf-form { display: grid; grid-template-columns: 140px 1fr auto; gap: 12px; align-items: end; margin-top: 14px; }
+.sf-form { display: grid; grid-template-columns: 140px 1fr auto; gap: 12px; align-items: start; margin-top: 14px; }
+.sf-form > div { display: flex; flex-direction: column; }
+.sf-form > button { margin-top: 22px !important; }
 .sf-form > button { width: auto; margin: 0; padding: 12px 22px; align-self: end; }
 .sf-form textarea { resize: vertical; min-height: 46px; }
 .sf .starter-list { margin: 10px 0 4px; }

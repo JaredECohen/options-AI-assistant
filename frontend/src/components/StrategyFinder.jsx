@@ -50,6 +50,17 @@ function formToView(f) {
   };
 }
 
+// Today's price +/- 2.5 expected moves, widened to show every strike and the target.
+export function chartDomain(c, data) {
+  const em = Math.max(data.expected_move || 0, data.spot * 0.02);
+  const pts = [data.spot - 2.5 * em, data.spot + 2.5 * em, data.target_price,
+    ...c.legs.filter((l) => l.strike).map((l) => Number(l.strike))].filter((v) => Number.isFinite(v));
+  const lo = Math.min(...pts);
+  const hi = Math.max(...pts);
+  const pad = (hi - lo) * 0.04;
+  return [Math.max(0, lo - pad), hi + pad];
+}
+
 const PARSED = { rules: 'Read from your description', model: 'Interpreted by the AI model', edited: 'Your edited settings',
   none: 'Could not tell the direction' };
 
@@ -58,7 +69,7 @@ function Candidate({ c, data, onOpen }) {
   const [open, setOpen] = useState(c.rank === 1);
   return (
     <article className={`sf-card${c.rank === 1 ? ' sf-best' : ''}`} aria-labelledby={`sf-${c.key}`}>
-      <header className="sf-card-head">
+      <div className="sf-card-head">
         <span className="sf-rank" aria-label={`Rank ${c.rank}`}>{c.rank}</span>
         <div>
           <h3 id={`sf-${c.key}`}>{c.name}</h3>
@@ -68,9 +79,10 @@ function Candidate({ c, data, onOpen }) {
             {c.rank === 1 ? <span className="tag tag-accent">Best fit</span> : null}
           </p>
         </div>
-      </header>
+      </div>
       <p className="sf-fit">{c.explanation.fit}</p>
-      <PayoffChart curve={c.payoff_curve} spot={data.spot} target={data.target_price} breakevens={m.breakevens} height={170} />
+      <PayoffChart legs={c.legs} domain={chartDomain(c, data)} spot={data.spot} target={data.target_price}
+        breakevens={m.breakevens} height={170} />
       <dl className="sf-metrics">
         <div><dt>Max profit</dt><dd className="pos">{money(m.max_profit)}</dd></div>
         <div><dt>Max loss</dt><dd className="neg">{money(m.max_loss)}</dd></div>
@@ -205,7 +217,7 @@ export default function StrategyFinder({ onOpen = () => {} }) {
             <span>Expiry {data.expiration} ({data.dte} days)</span>
             <span>ATM IV {pct(data.atm_iv)}</span>
             <span>Expected move ±{money(data.expected_move)}</span>
-            {data.interpreted.direction !== 'volatile' ? <span>Your target {money(data.target_price)}</span> : null}
+            {['bullish', 'bearish'].includes(data.interpreted.direction) ? <span>Your target {money(data.target_price)}</span> : null}
           </p>
           {data.candidates.length === 0 ? <p className="note">No structure fits these limits. Loosen the max loss, or allow undefined risk.</p> : (
             <div className="sf-grid">

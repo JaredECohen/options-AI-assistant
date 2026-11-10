@@ -221,7 +221,10 @@ def _install_error_handlers(app: FastAPI) -> None:
         return _error(exc.http_status, "llm_unavailable", exc.user_message, code=exc.code)
 
     @app.exception_handler(ProviderUnavailable)
-    async def provider_exc(_request: Request, exc: ProviderUnavailable):
+    async def provider_exc(request: Request, exc: ProviderUnavailable):
+        # Vendor failures are often transient; without the reason in the log they cannot be diagnosed.
+        log.warning("market_data_unavailable path=%s error=%s detail=%s", request.url.path, exc.__class__.__name__,
+                    str(exc)[:200])
         return _error(503, "market_data_unavailable", str(exc))
 
     @app.exception_handler(QuoteUnavailable)

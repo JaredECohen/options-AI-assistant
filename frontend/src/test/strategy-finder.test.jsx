@@ -111,3 +111,35 @@ describe('strategy finder', () => {
     expect(legText({ instrument: 'stock', side: 'buy', quantity: 100, premium: 752.43 })).toBe('Buy 100 shares at $752.43');
   });
 });
+
+describe('payoff math', () => {
+  it('computes exact expiration P&L from legs and keeps every strike as a point', async () => {
+    const { legsPayoff, curveFromLegs } = await import('../components/PayoffChart.jsx');
+    const legs = candidate(1, 'k', 'n').legs; // buy 752C @17.11, sell 790C @1.77: debit 15.34
+    expect(legsPayoff(legs, 700)).toBeCloseTo(-1534, 6);
+    expect(legsPayoff(legs, 767.34)).toBeCloseTo(0, 6);
+    expect(legsPayoff(legs, 900)).toBeCloseTo(2266, 6);
+    const curve = curveFromLegs(legs, 700, 820, 10);
+    expect(curve.map((p) => p.price)).toEqual(expect.arrayContaining([752, 790]));
+    expect(legsPayoff([{ instrument: 'stock', side: 'buy', quantity: 100, premium: 100 }], 110)).toBe(1000);
+  });
+});
+
+describe('chain hand-off', () => {
+  it('opens the structure expiry with every strike and both sides, and marks the legs', async () => {
+    const { default: ChainViewer } = await import('../components/ChainViewer.jsx');
+    const row = (k) => ({ strike: k, call: { bid: 1, ask: 1.1, multiplier: 100 }, put: { bid: 1, ask: 1.1, multiplier: 100 } });
+    const calls = mockFetch([
+      ['/api/expirations', { body: { expirations: ['2026-11-20', '2026-12-11'] } }],
+      [/\/api\/chain/, { body: { ticker: 'SPY', expiration: '2026-12-11', underlying_price: 752, atm_strike: 752,
+        chain: [710, 725, 752, 780, 795].map(row), total_strikes: 5, data_status: 'live', units: {} } }],
+    ]);
+    render(<ChainViewer focus={{ ticker: 'SPY', expiration: '2026-12-11', strikes: [710, 725, 780, 795], label: 'Iron condor', nonce: 1 }} />);
+    expect(await screen.findByTestId('chain-picked')).toHaveTextContent('Iron condor, strikes 710 / 725 / 780 / 795');
+    const chainCall = calls.find((c) => c.url.includes('/api/chain'));
+    expect(chainCall.url).toContain('expiration=2026-12-11');
+    expect(chainCall.url).toContain('side=both');
+    expect(chainCall.url).toMatch(/strikes=(500|\d{3,})/); // every strike, not the saved depth
+    expect(document.querySelectorAll('table.chain tr.picked')).toHaveLength(4);
+  });
+});

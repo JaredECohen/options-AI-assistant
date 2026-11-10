@@ -95,6 +95,9 @@ export default function ChainViewer({ onPick, focus = null }) {
   const [expirations, setExpirations] = useState([]);
   const [expiration, setExpiration] = useState('');
   const [depth, setDepth] = useState(initial.depth);
+  // Opened from the finder: show every strike so the structure is visible (not saved as a preference).
+  const [showAll, setShowAll] = useState(false);
+  const effectiveDepth = showAll ? 'all' : depth;
   const [side, setSide] = useState(initial.side);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -110,6 +113,8 @@ export default function ChainViewer({ onPick, focus = null }) {
   useEffect(() => {
     if (!focus) return;
     setTicker(focus.ticker);
+    setShowAll(true);
+    setSide('both'); // a structure can have calls and puts
     fetchExpirations(focus.ticker, focus.expiration);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.nonce]);
@@ -143,7 +148,7 @@ export default function ChainViewer({ onPick, focus = null }) {
   useEffect(() => {
     if (!expiration) return;
     const t = ticker.trim().toUpperCase();
-    const strikes = depth === 'all' ? ALL_STRIKES : depth;
+    const strikes = effectiveDepth === 'all' ? ALL_STRIKES : effectiveDepth;
     setLoading(true);
     setError(null);
     api(`/api/chain?ticker=${encodeURIComponent(t)}&expiration=${expiration}&side=${side}&strikes=${strikes}`, {
@@ -159,12 +164,13 @@ export default function ChainViewer({ onPick, focus = null }) {
         setLoading(false);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expiration, depth, side]);
+  }, [expiration, effectiveDepth, side]);
 
   // Centre the at-the-money row inside the scrolling table (not the page).
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
-    const row = atmRef.current;
+    // Centre the structure's first strike when one is marked, else the at-the-money row.
+    const row = wrap?.querySelector('tr.picked') || atmRef.current;
     if (!wrap || !row) return;
     // centre within the part of the box the sticky header does not cover
     const header = wrap.querySelector('thead')?.offsetHeight || 0;
@@ -195,8 +201,8 @@ export default function ChainViewer({ onPick, focus = null }) {
         </div>
         <div>
           <label htmlFor="chain-depth">Strikes each side</label>
-          <select id="chain-depth" value={String(depth)}
-                  onChange={(e) => setDepth(e.target.value === 'all' ? 'all' : Number(e.target.value))}>
+          <select id="chain-depth" value={String(effectiveDepth)}
+                  onChange={(e) => { setShowAll(false); setDepth(e.target.value === 'all' ? 'all' : Number(e.target.value)); }}>
             {DEPTHS.map((d) => <option key={d} value={String(d)}>{d === 'all' ? 'All' : d}</option>)}
           </select>
         </div>
@@ -223,6 +229,11 @@ export default function ChainViewer({ onPick, focus = null }) {
           {data.chain.length === 0 ? <Empty>No contracts for this expiration.</Empty> : (
             <>
               <p className="muted" data-testid="chain-summary">{summary(data)}</p>
+              {picked.size ? (
+                <p className="note" role="status" data-testid="chain-picked">
+                  Highlighted: {focus.label || 'your structure'}, strikes {[...picked].sort((a, b) => a - b).join(' / ')}.
+                </p>
+              ) : null}
               <div className="table-wrap chain-wrap" ref={wrapRef}>
                 <table className="chain">
                   <caption className="sr-only">
