@@ -324,8 +324,14 @@ table.chain th[scope="row"] { text-align: center; }
 /* chain: scrolls in its own box so the at-the-money row can be centred */
 .chain-wrap { max-height: 70vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
 .chain-wrap table.chain { margin: 0; }
-table.chain thead { position: sticky; top: 0; z-index: 1; background: var(--panel); }
-table.chain thead th { background: var(--panel); }
+/* Sticky header: each row sticks at its own offset. With collapsed borders, a sticky
+   <thead> let scrolled rows show through between the two header rows. */
+.chain-wrap table.chain { border-collapse: separate; border-spacing: 0; }
+table.chain thead th { position: sticky; z-index: 2; background: var(--panel); }
+table.chain thead tr:first-child th { top: 0; height: 26px; text-align: center; color: var(--accent);
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+table.chain thead tr:nth-child(2) th { top: 26px; }
+.status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 table.chain td.itm { background: rgba(148, 163, 184, 0.09); }
 table.chain tr.atm > * { background: rgba(56, 189, 248, 0.16); border-top: 1px solid var(--accent); border-bottom: 1px solid var(--accent); }
 .atm-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 600;

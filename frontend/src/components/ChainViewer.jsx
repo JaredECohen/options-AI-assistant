@@ -70,6 +70,22 @@ function summary(data) {
   return `${base}, centred on ${data.atm_strike} (ATM, ${BASIS[data.atm_basis] || 'estimated'})`;
 }
 
+// Days to expiration counted in calendar days from today (local date).
+export function dte(iso, now = new Date()) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((Date.UTC(y, m - 1, d) - today) / 86400000);
+}
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+export function expirationLabel(iso, now = new Date()) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return `${iso} (${WEEKDAY[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}) · ${dte(iso, now)}d`;
+}
+// 0-1 DTE chains are mostly noise for learning; open on the first expiry a week or more out.
+export function defaultExpiration(list, now = new Date()) {
+  return list.find((x) => dte(x, now) >= 7) || list[0] || '';
+}
+
 export default function ChainViewer({ onPick }) {
   const initial = useRef(loadView()).current;
   const [ticker, setTicker] = useState('');
@@ -100,7 +116,7 @@ export default function ChainViewer({ onPick }) {
     try {
       const res = await api(`/api/expirations?ticker=${encodeURIComponent(t)}`, { signal: nextExpSignal() });
       setExpirations(res.expirations || []);
-      setExpiration(res.expirations?.[0] || '');
+      setExpiration(defaultExpiration(res.expirations || []));
     } catch (err) {
       if (!isAbort(err)) setError(err);
     } finally {
@@ -158,7 +174,7 @@ export default function ChainViewer({ onPick }) {
           <select id="chain-exp" value={expiration} onChange={(e) => setExpiration(e.target.value)}
                   disabled={!expirations.length}>
             {expirations.length ? null : <option value="">Load a ticker first</option>}
-            {expirations.map((x) => <option key={x} value={x}>{x}</option>)}
+            {expirations.map((x) => <option key={x} value={x}>{expirationLabel(x)}</option>)}
           </select>
         </div>
         <div>
@@ -184,7 +200,7 @@ export default function ChainViewer({ onPick }) {
       {loading ? <Loading label="Loading chain…" /> : null}
       {data && !loading ? (
         <>
-          <p>
+          <p className="status-line">
             <DataStatus status={data.data_status} label={data.data_status_label} provider={data.provider} freshness={data.freshness} />{' '}
             Underlying {data.underlying_price == null ? 'n/a' : `$${fmt(data.underlying_price)}`} · prices in {data.units?.prices}
           </p>
