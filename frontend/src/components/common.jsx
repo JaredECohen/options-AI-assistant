@@ -13,6 +13,7 @@ export function DataStatus({ status, label, provider, freshness }) {
       {provider ? ` · ${provider}` : ''}
       {freshness && freshness.as_of ? ` · as of ${new Date(freshness.as_of).toLocaleString()}` : ''}
       {stale ? ' · STALE' : ''}
+      {freshness && freshness.market_open === false && !stale ? ' · market closed (last close)' : ''}
     </span>
   );
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
@@ -20,6 +21,26 @@ EXPIRATION = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
 STALE_AFTER = {"live": 120, "delayed": 30 * 60, "eod": 4 * 24 * 3600, "synthetic": None}
 
 
+NY = ZoneInfo("America/New_York")
+SESSION_OPEN, SESSION_CLOSE = dt.time(9, 30), dt.time(16, 15)
+
+
+def last_session_close(now: dt.datetime) -> tuple[bool, dt.datetime]:
+    """(market_open, reference time). While the market is open the reference is
+    now; while it is closed it is the most recent 16:15 ET weekday close, so the
+    closing quotes are not called stale all evening and weekend. Exchange holidays
+    are not modelled (a holiday reads as a normal closed weekday)."""
+    ny = now.astimezone(NY)
+    if ny.weekday() < 5 and SESSION_OPEN <= ny.time() < SESSION_CLOSE:
+        return True, now
+    day = ny.date()
+    if ny.weekday() >= 5 or ny.time() < SESSION_OPEN:
+        day -= dt.timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= dt.timedelta(days=1)
+    return False, dt.datetime.combine(day, SESSION_CLOSE, NY).astimezone(dt.UTC)
+
+
 def freshness(quote_times: list[str], data_status: str, now: dt.datetime | None = None) -> dict:
     now = now or dt.datetime.now(dt.UTC)
     parsed = []
@@ -30,10 +51,12 @@ def freshness(quote_times: list[str], data_status: str, now: dt.datetime | None 
             continue
     as_of = max(parsed) if parsed else None
     limit = STALE_AFTER.get(data_status)
+    market_open, reference = last_session_close(now)
     age = (now - as_of).total_seconds() if as_of else None
-    stale = None if limit is None or age is None else age > limit
+    lag = max((reference - as_of).total_seconds(), 0) if as_of else None  # behind the latest available data
+    stale = None if limit is None or lag is None else lag > limit
     return {"as_of": as_of.isoformat() if as_of else None, "age_seconds": None if age is None else int(age),
-            "stale": stale, "stale_after_seconds": limit}
+            "stale": stale, "stale_after_seconds": limit, "market_open": market_open}
 
 
 def _provenance(provider) -> dict:

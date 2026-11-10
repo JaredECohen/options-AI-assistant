@@ -93,6 +93,20 @@ def test_freshness_flags_stale_by_declared_status():
     assert freshness([], "live", now)["as_of"] is None
 
 
+def test_closing_quotes_are_not_stale_while_the_market_is_closed():
+    # Regression: ISSUE-005. At 8 PM ET the 4:15 PM closing chain was badged STALE.
+    close = dt.datetime(2026, 11, 9, 21, 15, tzinfo=dt.UTC)  # Mon 16:15 ET
+    evening = dt.datetime(2026, 11, 10, 1, 0, tzinfo=dt.UTC)  # Mon 20:00 ET
+    f = freshness([close.isoformat()], "live", evening)
+    assert f["stale"] is False and f["market_open"] is False and f["age_seconds"] == 13500
+    saturday = dt.datetime(2026, 11, 14, 15, 0, tzinfo=dt.UTC)
+    fri_close = dt.datetime(2026, 11, 13, 21, 15, tzinfo=dt.UTC)
+    assert freshness([fri_close.isoformat()], "live", saturday)["stale"] is False
+    assert freshness([close.isoformat()], "live", saturday)["stale"] is True  # Monday's close on Saturday is old
+    tuesday_open = dt.datetime(2026, 11, 10, 15, 0, tzinfo=dt.UTC)  # 10:00 ET, market open
+    assert freshness([close.isoformat()], "live", tuesday_open)["stale"] is True
+
+
 def test_payoff_endpoint_t5_example_and_quote_pricing(tmp_path):
     c, keys = client(tmp_path)
     leg = {"instrument": "option", "option_type": "put", "side": "sell", "strike": 100, "expiration": "2026-12-18", "premium": 5}
