@@ -93,6 +93,20 @@ def test_freshness_flags_stale_by_declared_status():
     assert freshness([], "live", now)["as_of"] is None
 
 
+def test_closing_quotes_are_not_stale_while_the_market_is_closed():
+    # Regression: ISSUE-005. At 8 PM ET the 4:15 PM closing chain was badged STALE.
+    close = dt.datetime(2026, 11, 9, 21, 15, tzinfo=dt.UTC)  # Mon 16:15 ET
+    evening = dt.datetime(2026, 11, 10, 1, 0, tzinfo=dt.UTC)  # Mon 20:00 ET
+    f = freshness([close.isoformat()], "live", evening)
+    assert f["stale"] is False and f["market_open"] is False and f["age_seconds"] == 13500
+    saturday = dt.datetime(2026, 11, 14, 15, 0, tzinfo=dt.UTC)
+    fri_close = dt.datetime(2026, 11, 13, 21, 15, tzinfo=dt.UTC)
+    assert freshness([fri_close.isoformat()], "live", saturday)["stale"] is False
+    assert freshness([close.isoformat()], "live", saturday)["stale"] is True  # Monday's close on Saturday is old
+    tuesday_open = dt.datetime(2026, 11, 10, 15, 0, tzinfo=dt.UTC)  # 10:00 ET, market open
+    assert freshness([close.isoformat()], "live", tuesday_open)["stale"] is True
+
+
 def test_payoff_endpoint_t5_example_and_quote_pricing(tmp_path):
     c, keys = client(tmp_path)
     leg = {"instrument": "option", "option_type": "put", "side": "sell", "strike": 100, "expiration": "2026-12-18", "premium": 5}
@@ -212,3 +226,76 @@ def test_snapshot_expiry_selection_brackets_30_days():
     assert [d for _e, d in select_expiries(weekly)] == [7.0, 28.0, 35.0]
     assert [d for _e, d in select_expiries([("a", 45.0), ("b", 60.0)])] == [45.0, 60.0]  # nothing below: no bracket
     assert select_expiries([]) == []
+
+
+# ---- QA 2026-11-09 regressions ----------------------------------------------------------
+
+def _flaky_provider(fail_expiry_index: int):
+    from app.providers.options.base import ProviderUnavailable
+    from app.providers.options.mock import MockOptionsProvider
+
+    class OneBadExpiry(MockOptionsProvider):
+        async def get_chain(self, ticker, expiration):
+            exps = await self.list_expirations(ticker)
+            if expiration == exps[fail_expiry_index]:
+                raise ProviderUnavailable("vendor hiccup")
+            return await super().get_chain(ticker, expiration)
+
+    return OneBadExpiry()
+
+
+def test_one_unpriceable_expiry_does_not_blank_analytics(tmp_path):
+    # Regression: ISSUE-002. A single expiry ThetaData refused failed the whole Analytics page.
+    c, keys = client(tmp_path, options_provider=_flaky_provider(3))
+    r = c.get("/api/analytics/SPY", headers=auth(keys))
+    assert r.status_code == 200
+    term = r.json()["summary"]["term_structure"]
+    assert any(t["unavailable_reason"] == "chain_unavailable" for t in term)
+    assert any(t["atm_iv"] is not None for t in term)
+
+
+def test_first_look_queues_the_iv_history_backfill_once(tmp_path):
+    # Regression: ISSUE-003. On a single web service nothing scheduled the backfill, so IV rank
+    # stayed "insufficient_history" forever.
+    from sqlalchemy import select
+
+    from app.db.models import Job
+
+    c, keys = client(tmp_path)
+    assert c.get("/api/analytics/SPY", headers=auth(keys)).json()["iv_history"]["status"] == "unavailable"
+    c, keys = client(tmp_path, settings_overrides={"options_history_provider": "thetadata"})
+    first = c.get("/api/analytics/SPY", headers=auth(keys)).json()["iv_history"]
+    c.post("/api/compare", json={"tickers": ["SPY", "QQQ"]}, headers=auth(keys))
+    c.post("/api/screener/run", json={"definition": {"universe": ["SPY", "IWM"]}, "preset": "high_iv_rank"},
+           headers=auth(keys))
+    assert first["status"] == "building" and "15 minutes" in first["detail"]
+    with c.app.state.db.session() as s:
+        keys_ = sorted(j.idempotency_key for j in s.execute(select(Job).where(Job.kind == "backfill_iv_history")).scalars())
+    assert keys_ == ["backfill_iv_history:IWM:full", "backfill_iv_history:QQQ:full", "backfill_iv_history:SPY:full"]
+
+
+def test_failures_are_reported_as_codes_not_class_names(tmp_path):
+    # Regression: ISSUE-004. Compare and Screener showed "(ProviderUnavailable)" / "(QuoteUnavailable)".
+    from app.api.routes_analytics import failure_code
+    from app.providers.options.base import ProviderUnavailable, QuoteUnavailable
+    from app.providers.options.thetadata import TransientUnavailable
+
+    assert failure_code(TransientUnavailable("x")) == "market_data_unavailable"
+    assert failure_code(ProviderUnavailable("x")) == "market_data_unavailable"
+    assert failure_code(QuoteUnavailable("x")) == "quote_unavailable"
+    assert failure_code(RuntimeError("x")) == "error"
+
+
+def test_surface_spreads_expiries_and_fits_only_liquid_quotes(tmp_path):
+    # Regression: ISSUE-012. With SPY dailies the surface's "first four" expiries were all in
+    # one week, and 0.01-bid far-wing calls showed up as 46%-IV "dislocations".
+    from app.api.routes_analytics import surface_expiries, surface_quality
+
+    daily = [(f"d{i}", float(i)) for i in range(7, 400)]
+    assert surface_expiries(daily, 4) == sorted(["d7", "d30", "d60", "d90"])
+    assert surface_quality({"bid": 1.0, "spread_pct": 0.05})
+    assert not surface_quality({"bid": 0.0, "spread_pct": 2.0})
+    assert not surface_quality({"bid": 0.01, "spread_pct": 0.67})
+    c, keys = client(tmp_path)
+    r = c.get("/api/analytics/SPY/surface", headers=auth(keys))
+    assert r.status_code == 200 and r.json()["surface"]

@@ -1,7 +1,8 @@
 // T2/T3: position builder with strategy templates and editable legs, and the
 // deterministic payoff result (exact bounds from the server; nothing computed here).
 import { useEffect, useState } from 'react';
-import { api, isAbort } from '../api.js';
+import { api } from '../api.js';
+import PayoffChart from './PayoffChart.jsx';
 import { DataStatus, Empty, ErrorNote, Loading, fmt, usd } from './common.jsx';
 
 const MAX_LEGS = 8;
@@ -13,9 +14,19 @@ const newLeg = (over = {}) => ({
 
 const step = (s) => (s >= 200 ? 5 : s >= 50 ? 1 : 0.5);
 const near = (s, mult) => {
+  if (!(s > 0)) return ''; // no price, no strike: never invent one
   const st = step(s);
   return Math.round((s * mult) / st) * st;
 };
+
+// The listed expiry closest to ~30 calendar days out (templates are monthly-style trades).
+export function templateExpiration(list, now = new Date(), target = 30) {
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = (iso) => { const [y, m, d] = iso.split('-').map(Number); return (Date.UTC(y, m - 1, d) - today) / 86400000; };
+  const future = list.filter((x) => days(x) >= 1);
+  if (!future.length) return '';
+  return future.reduce((best, x) => (Math.abs(days(x) - target) < Math.abs(days(best) - target) ? x : best));
+}
 
 // Templates express structure only; strikes are starting points to edit.
 export const TEMPLATES = {
@@ -67,22 +78,16 @@ function toApiLeg(l) {
            expiration: l.expiration, quantity: Number(l.quantity), premium };
 }
 
-function PayoffChart({ curve }) {
-  if (!curve || curve.length < 2) return null;
-  const W = 520, H = 180, pad = 24;
-  const xs = curve.map((p) => p.price), ys = curve.map((p) => p.payoff);
-  const [x0, x1] = [Math.min(...xs), Math.max(...xs)];
-  const [y0, y1] = [Math.min(...ys, 0), Math.max(...ys, 0)];
-  const sx = (x) => pad + ((x - x0) / (x1 - x0 || 1)) * (W - 2 * pad);
-  const sy = (y) => H - pad - ((y - y0) / (y1 - y0 || 1)) * (H - 2 * pad);
-  const d = curve.map((p, i) => `${i ? 'L' : 'M'}${sx(p.price).toFixed(1)},${sy(p.payoff).toFixed(1)}`).join(' ');
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img"
-         aria-label="Payoff at expiration across underlying prices (display only; bounds above are exact)">
-      <line x1={pad} x2={W - pad} y1={sy(0)} y2={sy(0)} className="axis" />
-      <path d={d} className="curve" fill="none" />
-    </svg>
-  );
+// Focus the server's wide curve on the strikes and today's price (+/- 15%).
+function zoom(curve, c) {
+  if (!curve) return curve;
+  const strikes = (c.inputs_used?.legs || []).filter((l) => l.strike).map((l) => Number(l.strike));
+  const anchors = [c.underlying_price, ...strikes, ...(c.breakevens || [])].filter(Number.isFinite);
+  if (!anchors.length) return curve;
+  const lo = Math.min(...anchors) * 0.85;
+  const hi = Math.max(...anchors) * 1.15;
+  const inside = curve.filter((p) => p.price >= lo && p.price <= hi);
+  return inside.length >= 2 ? inside : curve;
 }
 
 export function PayoffResult({ result }) {
@@ -102,7 +107,7 @@ export function PayoffResult({ result }) {
         <dt>{c.net_debit > 0 ? 'Net debit' : 'Net credit'}</dt><dd>{usd(c.net_debit > 0 ? c.net_debit : c.net_credit)}</dd>
         <dt>Underlying</dt><dd>{c.underlying_price == null ? 'not available' : `$${fmt(c.underlying_price)}`}</dd>
       </dl>
-      <PayoffChart curve={c.payoff_curve} />
+      <PayoffChart curve={zoom(c.payoff_curve, c)} spot={c.underlying_price} breakevens={c.breakevens || []} />
       <details>
         <summary>Premiums used and conventions</summary>
         <ul>
@@ -120,10 +125,11 @@ export function PayoffResult({ result }) {
   );
 }
 
-export default function Builder({ seed }) {
+export default function Builder({ seed, position }) {
   const [ticker, setTicker] = useState('');
   const [legs, setLegs] = useState([newLeg()]);
   const [template, setTemplate] = useState('');
+  const [templateNote, setTemplateNote] = useState('');
   const [fill, setFill] = useState('mid');
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -140,6 +146,20 @@ export default function Builder({ seed }) {
   }, [seed]);
 
   useEffect(() => {
+    if (!position) return;
+    // A structure from the strategy finder. Premiums are left blank so they reprice
+    // from current quotes with the chosen fill convention.
+    setTicker(position.ticker);
+    setTemplate('');
+    setTemplateNote(position.label ? `Loaded "${position.label}" from the strategy finder. Premiums reprice from live quotes.` : '');
+    setLegs(position.legs.slice(0, MAX_LEGS).map((l) => newLeg({
+      instrument: l.instrument, side: l.side, quantity: l.quantity,
+      ...(l.instrument === 'option' ? { option_type: l.option_type, strike: l.strike, expiration: l.expiration } : {}),
+    })));
+    setResult(null);
+  }, [position]);
+
+  useEffect(() => {
     const ctrl = new AbortController();
     api('/api/positions', { signal: ctrl.signal }).then((r) => setSaved(r.items || [])).catch(() => {});
     return () => ctrl.abort();
@@ -147,15 +167,20 @@ export default function Builder({ seed }) {
 
   const applyTemplate = async (name) => {
     setTemplate(name);
+    setTemplateNote('');
     if (!name) return;
-    let spot = 100, exp = '';
+    // Strikes come only from a real price. A failed lookup used to fall back to $100,
+    // which built a SPY iron condor at 88/93/107/112 against a $752 stock.
+    let spot = null, exp = '';
     const t = ticker.trim().toUpperCase();
-    if (t) {
-      try {
-        spot = (await api(`/api/quote?ticker=${t}`)).price;
-        exp = (await api(`/api/expirations?ticker=${t}`)).expirations?.[2] || '';
-      } catch (err) {
-        if (!isAbort(err)) setError(err);
+    if (!t) {
+      setTemplateNote('Enter a ticker to fill strikes and the expiration from current prices.');
+    } else {
+      const [quote, exps] = await Promise.allSettled([api(`/api/quote?ticker=${t}`), api(`/api/expirations?ticker=${t}`)]);
+      if (quote.status === 'fulfilled' && quote.value.price > 0) spot = quote.value.price;
+      if (exps.status === 'fulfilled') exp = templateExpiration(exps.value.expirations || []);
+      if (spot === null) {
+        setTemplateNote(`No current price for ${t} right now, so strikes are left blank; enter them, or pick the template again.`);
       }
     }
     setLegs(TEMPLATES[name](spot, exp));
@@ -220,6 +245,7 @@ export default function Builder({ seed }) {
             </select>
           </div>
         </div>
+        {templateNote ? <p className="note" role="status">{templateNote}</p> : null}
         <table className="legs">
           <caption className="sr-only">Position legs</caption>
           <thead><tr><th>Type</th><th>Side</th><th>Call/Put</th><th>Strike</th><th>Expiration</th><th>Qty</th><th>Premium</th><th><span className="sr-only">Actions</span></th></tr></thead>

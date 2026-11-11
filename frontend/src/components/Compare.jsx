@@ -2,7 +2,7 @@
 // server could not normalize are listed separately with the reason.
 import { useState } from 'react';
 import { api } from '../api.js';
-import { Empty, ErrorNote, Loading, Unavailable } from './common.jsx';
+import { Empty, ErrorNote, Loading, Unavailable, reasonText } from './common.jsx';
 
 export default function Compare() {
   const [tickers, setTickers] = useState('SPY, QQQ');
@@ -45,7 +45,9 @@ export default function Compare() {
       {loading ? <Loading /> : null}
       {data && !loading ? (
         <>
-          <p className="muted">{data.note} Maturity {data.target_dte}d, {data.moneyness}; reference status {data.reference_data_status}.</p>
+          {rows.length ? (
+            <p className="muted">{data.note} Maturity {data.target_dte}d, {data.moneyness}; reference status {data.reference_data_status}.</p>
+          ) : null}
           {rows.length === 0 ? <Empty>No results.</Empty> : (
             <table>
               <thead><tr>{['Ticker', 'IV', 'HV20', 'IV/HV', 'IV rank', '25Δ skew', 'Status', 'Comparable'].map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
@@ -60,7 +62,7 @@ export default function Compare() {
               ))}</tbody>
             </table>
           )}
-          {data.errors?.length ? <p className="error">Could not load: {data.errors.map((e) => `${e.ticker} (${e.error})`).join(', ')}</p> : null}
+          {data.errors?.length ? <p className="error">Could not load: {data.errors.map((e) => `${e.ticker} (${reasonText(e.error)})`).join(', ')}</p> : null}
         </>
       ) : null}
     </section>

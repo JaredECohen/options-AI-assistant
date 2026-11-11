@@ -41,6 +41,7 @@ import logging
 import math
 import re
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -52,6 +53,15 @@ from .base import EodOption, Greeks, OptionQuote, ProviderUnavailable, QuoteUnav
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "http://127.0.0.1:25503"
+TRANSIENT_ATTEMPTS = 3  # live 2026-11-09: identical snapshot calls alternated between 0.1 s success and a 10 s failure
+PRICE_MEMORY_SECONDS = 15 * 60
+STOCK_HISTORY_MAX_DAYS = 365  # vendor limit on end - start for stock EOD history
+SESSION_CLOSE = dt.time(16, 15)  # index ETFs such as SPY trade options until 16:15 ET
+
+
+class TransientUnavailable(ProviderUnavailable):
+    """A vendor-side failure that a retry usually clears (see TRANSIENT_ATTEMPTS)."""
+
 NY = ZoneInfo("America/New_York")
 _ALLOWED_STATUS = {"live", "delayed", "eod"}
 _SYMBOL_RE = re.compile(r"^[A-Z.]{1,10}$")
@@ -215,6 +225,8 @@ class ThetaDataProvider:
         self._client_factory = client_factory or (lambda: _library_client(email, password, api_key))
         self._client = None
         self._client_lock = threading.Lock()
+        self._last_price: dict[str, tuple[float, float]] = {}  # symbol -> (price, monotonic time)
+        self._clock = time.monotonic  # injectable: patching time.monotonic would also freeze asyncio's clock
         # Signing in takes ~10-15 s, about as long as a whole request may take, so it
         # gets its own budget, and concurrent first requests share one sign-in.
         self._sign_in_lock = asyncio.Lock()
@@ -278,8 +290,22 @@ class ThetaDataProvider:
             with self._client_lock:
                 self._client = None  # sign in again on the next request
             return ProviderUnavailable("ThetaData session expired; it will sign in again.")
+        details = getattr(exc, "details", None)
+        details = (details() if callable(details) else details) or ""
+        if name == "INVALID_ARGUMENT" and "underlying" in details.lower():
+            # "Expected exactly one underlying STOCK tick; got 0": the greeks service
+            # briefly lacked the stock's price (seen after hours). Not our parameters.
+            log.info("thetadata_transient %s", details[:200])
+            return TransientUnavailable("ThetaData could not price against the underlying just now; try again.")
+        if name in ("UNAVAILABLE", "DEADLINE_EXCEEDED", "INTERNAL", "RESOURCE_EXHAUSTED"):
+            return TransientUnavailable(f"ThetaData is temporarily unavailable ({name}).")
         if name == "INVALID_ARGUMENT":
+            log.info("thetadata_invalid_argument %s", details[:200])
             return QuoteUnavailable("ThetaData rejected the request parameters.")
+        log.info("thetadata_error kind=%s code=%s details=%s", kind, name or "-", details[:200])
+        if kind in ("ConnectTimeout", "ConnectError", "ReadTimeout", "RemoteProtocolError", "ReadError"):
+            # Network blips, seen when the library re-authenticates; a retry clears them.
+            return TransientUnavailable(f"ThetaData connection failed ({kind}); try again.")
         if name:
             return ProviderUnavailable(f"ThetaData returned {name}.")
         return ProviderUnavailable(f"ThetaData request failed ({kind}).")
@@ -311,12 +337,18 @@ class ThetaDataProvider:
 
     async def _get_library(self, path: str, params: dict) -> list[dict]:
         await self._ensure_library_client()
-        async with self._sem:
-            self.requests += 1
-            try:
-                return await asyncio.wait_for(asyncio.to_thread(self._call_library, path, params), self._timeout)
-            except TimeoutError as exc:
-                raise ProviderUnavailable("ThetaData did not answer in time.") from exc
+        for attempt in range(1, TRANSIENT_ATTEMPTS + 1):
+            async with self._sem:
+                self.requests += 1
+                try:
+                    return await asyncio.wait_for(asyncio.to_thread(self._call_library, path, params), self._timeout)
+                except TimeoutError as exc:
+                    raise ProviderUnavailable("ThetaData did not answer in time.") from exc
+                except TransientUnavailable:
+                    if attempt == TRANSIENT_ATTEMPTS:
+                        raise
+            await asyncio.sleep(0.2 * attempt)  # outside the semaphore: let other requests through
+        raise AssertionError("unreachable")
 
     # ---- terminal transport --------------------------------------------------
     async def _get_terminal(self, path: str, params: dict) -> list[dict]:
@@ -352,6 +384,17 @@ class ThetaDataProvider:
     async def get_underlying_price(self, ticker: str) -> float:
         sym = self._symbol(ticker)
         try:
+            price = await self._underlying_price(sym)
+        except (TransientUnavailable, ProviderUnavailable, QuoteUnavailable):
+            remembered = self._last_price.get(sym)
+            if remembered and self._clock() - remembered[1] < PRICE_MEMORY_SECONDS:
+                return remembered[0]  # this session's price from minutes ago beats an error page
+            raise
+        self._last_price[sym] = (price, self._clock())
+        return price
+
+    async def _underlying_price(self, sym: str) -> float:
+        try:
             rows = await self._get("/v3/stock/snapshot/quote", {"symbol": sym})
             for r in rows:
                 bid, ask = _num(r.get("bid")), _num(r.get("ask"))
@@ -370,9 +413,13 @@ class ThetaDataProvider:
         rows = await self._get("/v3/option/list/expirations", {"symbol": self._symbol(ticker)})
         return sorted({e for e in (_exp(r.get("expiration")) for r in rows) if e})
 
-    async def list_expirations(self, ticker: str) -> list[str]:
-        today = dt.datetime.now(NY).date().isoformat()
-        return [e for e in await self.list_expirations_all(ticker) if e >= today]
+    async def list_expirations(self, ticker: str, now: dt.datetime | None = None) -> list[str]:
+        """Expirations still tradable: today's drops out after the 16:15 ET close
+        (ThetaData then refuses its snapshot, and nobody can trade it)."""
+        now = (now or dt.datetime.now(NY)).astimezone(NY)
+        today = now.date().isoformat()
+        after_close = now.time() >= SESSION_CLOSE
+        return [e for e in await self.list_expirations_all(ticker) if e > today or (e == today and not after_close)]
 
     async def _optional(self, path: str, params: dict) -> list[dict]:
         try:
@@ -389,7 +436,7 @@ class ThetaDataProvider:
         async def priced() -> tuple[list[dict], bool]:
             try:
                 return await self._get("/v3/option/snapshot/greeks/first_order", params), True
-            except PermissionDenied:  # Value tier: quotes without greeks
+            except (PermissionDenied, TransientUnavailable):  # Value tier, or the greeks service is down: quotes only
                 return await self._get("/v3/option/snapshot/quote", params), False
 
         (rows, has_greeks), oi_rows, ohlc_rows = await asyncio.gather(
@@ -417,6 +464,10 @@ class ThetaDataProvider:
                 iv = _num(r.get("implied_vol"))
                 if iv is not None and iv <= 0:
                     iv = None
+                if bid is None or bid <= 0:
+                    # No bid: the vendor still prints an IV, but solved from a 0.00/0.01
+                    # quote it is noise (live SPY 0DTE showed 25%, 12.5%, 6.3%, 108.9%).
+                    iv = None
             volume, last = vol.get((right, strike), (None, None))
             out.append(OptionQuote(
                 option_type=right, strike=strike, expiration=exp, bid=bid, ask=ask, last=last, mark=mark,
@@ -435,11 +486,23 @@ class ThetaDataProvider:
 
     # ---- history -----------------------------------------------------------
     async def get_daily_bars(self, ticker: str, start: dt.date, end: dt.date) -> list[tuple[dt.date, float]]:
-        try:
-            rows = await self._get("/v3/stock/history/eod", {"symbol": self._symbol(ticker),
-                                                              "start_date": f"{start:%Y%m%d}", "end_date": f"{end:%Y%m%d}"})
-        except (PermissionDenied, NoData):
-            return []
+        # ThetaData refuses ranges over 365 days ("Too many days between start and end
+        # date; max 365 days allowed"); analytics asks for 400 so HV252 has a full window.
+        # ThetaData's calendar is New York's: after ~7 PM ET a UTC "today" is tomorrow there and
+        # the whole request is refused ("Date range contains future date").
+        end = min(end, dt.datetime.now(NY).date())
+        rows: list[dict] = []
+        lo = start
+        while lo <= end:
+            hi = min(lo + dt.timedelta(days=STOCK_HISTORY_MAX_DAYS), end)
+            try:
+                rows += await self._get("/v3/stock/history/eod", {"symbol": self._symbol(ticker),
+                                                                  "start_date": f"{lo:%Y%m%d}", "end_date": f"{hi:%Y%m%d}"})
+            except NoData:
+                pass
+            except PermissionDenied:
+                return []
+            lo = hi + dt.timedelta(days=1)
         out = {}
         for r in rows:
             day = _day(r.get("last_trade") or r.get("created") or r.get("timestamp") or r.get("date"))

@@ -19,8 +19,38 @@ from app.db import repo
 from app.integrations import course_context
 from app.integrations.marketmosaic import ResearchUnavailable
 from app.jobs import queue
+from app.providers.options.base import ProviderUnavailable, QuoteUnavailable
 
 router = APIRouter()
+IV_BACKFILL_DAYS = 365
+
+
+def failure_code(exc: Exception) -> str:
+    """A stable, user-presentable code for a provider failure (never a class name)."""
+    from app.providers.options.base import ProviderUnavailable, QuoteUnavailable
+
+    if isinstance(exc, ProviderUnavailable):
+        return "market_data_unavailable"
+    if isinstance(exc, QuoteUnavailable):
+        return "quote_unavailable"
+    return getattr(exc, "code", None) or "error"
+
+
+def ensure_iv_history(state, ticker: str, iv_rank_reason: str) -> dict:
+    """IV rank and percentile need about a year of daily IV. Nothing schedules that
+    backfill on a single web service, so the first look at a ticker queues it once
+    (the key is shared with app.worker's schedule, so it never runs twice)."""
+    if iv_rank_reason != "insufficient_history":
+        return {"status": "ready"}
+    if state.settings.options_history_provider != "thetadata":
+        return {"status": "unavailable", "detail": "No historical options source is configured."}
+    key = f"backfill_iv_history:{ticker}:full"
+    job = queue.enqueue(state.db, "backfill_iv_history", key, {"ticker": ticker, "days": IV_BACKFILL_DAYS})
+    if job.status in ("queued", "running"):
+        return {"status": "building", "detail": "Building a year of daily IV history (one-time, about 15 minutes)."}
+    if job.status == "succeeded":
+        return {"status": "short", "detail": "History was built but covers too few trading days for a rank yet."}
+    return {"status": "failed", "detail": "The IV history backfill failed; it will be retried on a later visit."}
 TICKER_PATH = r"^[A-Za-z.]{1,10}$"
 TickerPath = Path(..., pattern=TICKER_PATH)
 MAX_LIVE_UNIVERSE = 10
@@ -35,13 +65,36 @@ async def ticker_analytics(request: Request, ticker: str = TickerPath, expiratio
                            principal: Principal = Depends(require("analytics"))):
     state = request.app.state
     snap = await state.snapshots.get(ticker)
-    body = {"summary": snap.as_json(), "conventions": state.analytics_cfg.conventions(), **_provenance(state.options_provider)}
+    body = {"summary": snap.as_json(), "conventions": state.analytics_cfg.conventions(),
+            "iv_history": ensure_iv_history(state, snap.ticker, snap.iv_rank.reason), **_provenance(state.options_provider)}
     if expiration:
         quotes = await state.options_provider.get_chain(ticker, expiration)
         now = dt.datetime.now(dt.UTC)
         body["chain"] = {"expiration": expiration, "contracts": enrich_chain(quotes, snap.underlying, expiration, now, state.analytics_cfg),
                          "freshness": freshness([q.quote_time for q in quotes if q.quote_time], state.options_provider.data_status)}
     return body
+
+
+SURFACE_TARGET_DTES = (7, 30, 60, 90, 180, 365)
+SURFACE_MAX_SPREAD = 0.5  # (ask - bid) / mid
+
+
+def surface_expiries(eligible: list[tuple[str, float]], n: int) -> list[str]:
+    """Expiries spread across the term structure: the one nearest each target DTE.
+    "The first n" were all in one week on tickers with daily expirations (SPY)."""
+    chosen: list[str] = []
+    for target in SURFACE_TARGET_DTES:
+        free = [(abs(d - target), e) for e, d in eligible if e not in chosen]
+        if free and len(chosen) < n:
+            chosen.append(min(free)[1])
+    return sorted(chosen)
+
+
+def surface_quality(c: dict) -> bool:
+    """Only quotes a smile can be fitted to: a real bid and a spread under 50% of mid.
+    Far-wing 0.01-bid contracts produced 'dislocations' like a 990 SPY call at 46% IV."""
+    bid, spread = c.get("bid"), c.get("spread_pct")
+    return bid is not None and bid > 0 and spread is not None and spread <= SURFACE_MAX_SPREAD
 
 
 @router.get("/api/analytics/{ticker}/surface")
@@ -51,13 +104,18 @@ async def surface(request: Request, ticker: str = TickerPath, max_expiries: int 
     p, cfg = state.options_provider, state.analytics_cfg
     now = dt.datetime.now(dt.UTC)
     underlying = await p.get_underlying_price(ticker)
-    exps = [e for e in await p.list_expirations(ticker) if 7 <= time_to_expiry(e, now) * 365 <= 365][:max_expiries]
+    listed = [(e, time_to_expiry(e, now) * 365) for e in await p.list_expirations(ticker)]
+    exps = surface_expiries([(e, d) for e, d in listed if 7 <= d <= 365], max_expiries)
     slices = []
     for exp in exps:
         T = time_to_expiry(exp, now)
         F = forward_price(underlying, T, cfg)
-        enriched = enrich_chain(await p.get_chain(ticker, exp), underlying, exp, now, cfg)
-        pts = [(math.log(k / F), iv, "put" if k < F else "call", k) for k, iv in otm_iv_points(enriched, F)]
+        try:
+            enriched = enrich_chain(await p.get_chain(ticker, exp), underlying, exp, now, cfg)
+        except (ProviderUnavailable, QuoteUnavailable):
+            continue  # one expiry the vendor will not price must not blank the surface
+        liquid = [c for c in enriched if surface_quality(c)]
+        pts = [(math.log(k / F), iv, "put" if k < F else "call", k) for k, iv in otm_iv_points(liquid, F)]
         slices.append(ExpirySlice(exp, T * 365, pts))
     return {"ticker": ticker.upper(), "as_of": now.isoformat(), "underlying_price": underlying,
             "surface": build_surface(slices), "conventions": cfg.conventions(), **_provenance(p)}
@@ -77,8 +135,9 @@ async def compare_tickers(body: CompareIn, request: Request, principal: Principa
         try:
             s = await state.snapshots.get(t)
         except Exception as exc:  # noqa: BLE001 - one bad ticker must not sink the table
-            errors.append({"ticker": t, "error": getattr(exc, "code", exc.__class__.__name__)})
+            errors.append({"ticker": t, "error": failure_code(exc)})
             continue
+        ensure_iv_history(state, s.ticker, s.iv_rank.reason)
         snaps.append(TickerSnapshot(s.ticker, s.as_of, "USD", s.data_status, s.underlying,
                                     [(x["dte"], x["atm_iv"]) for x in s.term if x["atm_iv"]], s.hv["hv20"], s.iv_rank, s.skew))
     return {**compare(snaps, body.target_dte, body.sort_by), "errors": errors}
@@ -94,9 +153,12 @@ async def _metrics(state, universe) -> dict:
     out = {}
     for t in universe:
         try:
-            out[t] = (await state.snapshots.get(t)).screener_row()
+            snap = await state.snapshots.get(t)
         except Exception as exc:  # noqa: BLE001
-            out[t] = {"_reasons": {f: getattr(exc, "code", exc.__class__.__name__) for f in screener.FIELDS}}
+            out[t] = {"_reasons": {f: failure_code(exc) for f in screener.FIELDS}}
+            continue
+        out[t] = snap.screener_row()
+        ensure_iv_history(state, snap.ticker, snap.iv_rank.reason)
     return out
 
 

@@ -13,3 +13,4 @@ frontend/dist/
 
 # local development database (DATABASE_URL in .env.example)
 *.db
+.gstack/

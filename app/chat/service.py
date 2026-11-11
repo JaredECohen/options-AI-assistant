@@ -199,6 +199,9 @@ class ChatService:
                 f"Main Risks: {strat['main_risks']}\n"
                 "Assumptions / What I need from you: If you want payoff calculations, share ticker, legs, and optional premiums."
             )
+            ticker = (req.ticker or "").upper().strip()
+            if ticker:
+                response_text += "\n\n" + await self._live_example(strategy_name, ticker)
             return ChatResponse(response_text=response_text)
 
         if req.view:
@@ -210,6 +213,16 @@ class ChatService:
                 "Select a strategy or a market view to get an explanation."
             )
         )
+
+    async def _live_example(self, strategy_name: str, ticker: str) -> str:
+        from app.chat.live_example import live_example
+
+        try:
+            block = await live_example(strategy_name, ticker, self.options_provider)
+        except Exception as exc:  # noqa: BLE001 - the explanation stands without the example
+            self._log("Live example unavailable", ticker=ticker, error=exc.__class__.__name__)
+            return f"*A live {ticker} example is unavailable right now (market data could not be priced).*"
+        return block or ""
 
     def _record_turn(self, session_id: str, user_text: str, response_text: str, req: ChatRequest, kind: str) -> None:
         if kind == "off_topic":

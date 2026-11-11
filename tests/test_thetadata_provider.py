@@ -226,9 +226,13 @@ class AuthenticationError(Exception):  # same name as thetadata.errors.Authentic
 
 
 class RpcError(Exception):
-    def __init__(self, name):
+    def __init__(self, name, details=""):
         super().__init__(name)
         self._name = name
+        self._details = details
+
+    def details(self):
+        return self._details
 
     def code(self):
         return type("Code", (), {"name": self._name})()
@@ -416,3 +420,148 @@ async def test_warm_up_signs_in_once_and_never_raises():
     broken = ThetaDataProvider(access="library", client_factory=failing)
     assert await broken.warm_up() is False
     assert await ThetaDataProvider(access="terminal").warm_up() is True  # nothing to warm
+
+
+# Regression: QA 2026-11-09. After hours, ThetaData's greeks snapshots alternated between a
+# 0.1 s success and a 10 s "INVALID_ARGUMENT: Expected exactly one underlying STOCK tick; got 0".
+# The app called that "rejected the request parameters" and failed the whole page.
+TICK = "Expected exactly one underlying STOCK tick; got 0"
+
+
+class Flaky(FakeClient):
+    """Fails the first `fails` calls of each method with the transient tick error."""
+
+    def __init__(self, responses, fails):
+        super().__init__(responses)
+        self.fails = dict.fromkeys(responses, fails) if isinstance(fails, int) else fails
+
+    def __getattr__(self, method):
+        inner = super().__getattr__(method)
+
+        def call(**kwargs):
+            if self.fails.get(method, 0) > 0:
+                self.fails[method] -= 1
+                self.calls.append((method, kwargs))
+                raise RpcError("INVALID_ARGUMENT", TICK)
+            return inner(**kwargs)
+        return call
+
+
+IV_ROWS = [{"symbol": "SPY", "expiration": dt.date(2099, 1, 15), "strike": 750.0, "right": "CALL",
+            "implied_vol": 0.2, "underlying_price": 752.43}]
+
+
+async def test_transient_underlying_tick_error_is_retried():
+    client = Flaky({"option_snapshot_greeks_implied_volatility": IV_ROWS}, fails=2)
+    p, _ = lib_provider(client)
+    assert await p.get_underlying_price("SPY") == 752.43
+    assert len([c for c in client.calls if c[0] == "option_snapshot_greeks_implied_volatility"]) == 3
+
+
+async def test_persistent_transient_error_is_unavailable_not_bad_parameters():
+    from app.providers.options.thetadata import TransientUnavailable
+    p, _ = lib_provider(Flaky({"option_snapshot_greeks_implied_volatility": IV_ROWS}, fails=99))
+    with pytest.raises(TransientUnavailable, match="try again"):
+        await p.get_underlying_price("SPY")
+    p, _ = lib_provider(FakeClient(raises={"option_list_expirations": RpcError("INVALID_ARGUMENT", "bad date")}))
+    with pytest.raises(QuoteUnavailable, match="rejected"):  # a genuine parameter error stays one
+        await p.list_expirations_all("SPY")
+
+
+async def test_last_good_price_covers_a_vendor_hiccup():
+    client = Flaky({"option_snapshot_greeks_implied_volatility": IV_ROWS}, fails=0)
+    p, _ = lib_provider(client)
+    assert await p.get_underlying_price("SPY") == 752.43
+    client.fails["option_snapshot_greeks_implied_volatility"] = 99
+    assert await p.get_underlying_price("SPY") == 752.43  # remembered, minutes old
+    import app.providers.options.thetadata as T
+    later = _time.monotonic() + T.PRICE_MEMORY_SECONDS + 1
+    p._clock = lambda: later
+    with pytest.raises(ProviderUnavailable):
+        await p.get_underlying_price("SPY")
+
+
+async def test_chain_falls_back_to_quotes_when_greeks_are_down_and_hides_no_bid_iv():
+    quote_rows = [{"symbol": "SPY", "expiration": dt.date(2099, 1, 15), "strike": 750.0, "right": "CALL",
+                   "bid": 4.0, "ask": 4.2, "timestamp": TS}]
+    client = Flaky({"option_snapshot_greeks_first_order": GREEKS_ROWS, "option_snapshot_quote": quote_rows},
+                   fails={"option_snapshot_greeks_first_order": 99})
+    p, _ = lib_provider(client)
+    chain = await p.get_chain("SPY", "2099-01-15")
+    assert [(q.strike, q.bid, q.greeks) for q in chain] == [(750.0, 4.0, None)]
+    p, _ = lib_provider(FakeClient({"option_snapshot_greeks_first_order": GREEKS_ROWS}))
+    by_type = {q.option_type: q for q in await p.get_chain("SPY", "2026-12-18")}
+    assert by_type["call"].implied_volatility == 0.18
+    no_bid = dict(GREEKS_ROWS[0], bid=0.0, ask=0.01, implied_vol=0.25)
+    p, _ = lib_provider(FakeClient({"option_snapshot_greeks_first_order": [no_bid]}))
+    [q] = await p.get_chain("SPY", "2026-12-18")
+    assert q.implied_volatility is None and q.bid == 0.0  # 0.00/0.01 quote: no meaningful IV
+
+
+async def test_todays_expiration_drops_out_after_the_close():
+    exps = [{"symbol": "SPY", "expiration": dt.date(2026, 11, 9)}, {"symbol": "SPY", "expiration": dt.date(2026, 11, 10)}]
+    p, _ = lib_provider(FakeClient({"option_list_expirations": exps}))
+    ny = zoneinfo.ZoneInfo("America/New_York")
+    assert await p.list_expirations("SPY", now=dt.datetime(2026, 11, 9, 15, 0, tzinfo=ny)) == ["2026-11-09", "2026-11-10"]
+    assert await p.list_expirations("SPY", now=dt.datetime(2026, 11, 9, 20, 0, tzinfo=ny)) == ["2026-11-10"]
+
+
+async def test_daily_bars_split_ranges_over_the_vendors_365_day_limit():
+    # Regression: ISSUE-011. Analytics asked for 400 days in one request; ThetaData refused
+    # ("max 365 days allowed") and every HV figure read "no price history".
+    seen = []
+
+    class Bars(FakeClient):
+        def __getattr__(self, method):
+            def call(**kw):
+                seen.append((kw["start_date"], kw["end_date"]))
+                assert (kw["end_date"] - kw["start_date"]).days <= 365
+                return lib_rows([{"symbol": "SPY", "close": 700.0 + len(seen),
+                                  "last_trade": dt.datetime.combine(kw["end_date"], dt.time(16), NYZ)}])
+            return call
+
+    p, _ = lib_provider(Bars())
+    bars = await p.get_daily_bars("SPY", dt.date(2025, 10, 5), dt.date(2026, 11, 9))
+    assert len(seen) == 2 and seen[0][1] + dt.timedelta(days=1) == seen[1][0]
+    assert [d for d, _c in bars] == [seen[0][1], dt.date(2026, 11, 9)]
+
+
+async def test_daily_bars_never_ask_for_a_new_york_future_date():
+    # Regression: ISSUE-013. After ~7 PM ET, a UTC 'today' is tomorrow in New York and ThetaData
+    # refuses the range ("Date range contains future date"), so HV failed every evening.
+    seen = []
+
+    class Bars(FakeClient):
+        def __getattr__(self, method):
+            def call(**kw):
+                seen.append(kw["end_date"])
+                return lib_rows([{"symbol": "SPY", "close": 700.0,
+                                  "last_trade": dt.datetime.combine(kw["end_date"], dt.time(16), NYZ)}])
+            return call
+
+    p, _ = lib_provider(Bars())
+    ny_today = dt.datetime.now(NYZ).date()
+    await p.get_daily_bars("SPY", ny_today - dt.timedelta(days=10), ny_today + dt.timedelta(days=1))
+    assert max(seen) == ny_today
+
+
+async def test_connection_blips_are_retried():
+    class Blip(Exception):
+        pass
+
+    Blip.__name__ = "ConnectTimeout"
+    client = FakeClient({"option_list_expirations": [{"symbol": "SPY", "expiration": dt.date(2099, 1, 15)}]})
+    calls = {"n": 0}
+    real = client.__getattr__("option_list_expirations")
+
+    class Flaky:
+        def __getattr__(self, method):
+            def call(**kw):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise Blip("connect timeout")
+                return real(**kw)
+            return call
+
+    p, _ = lib_provider(Flaky())
+    assert await p.list_expirations_all("SPY") == ["2099-01-15"] and calls["n"] == 2

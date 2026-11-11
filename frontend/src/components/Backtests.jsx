@@ -46,10 +46,18 @@ function StatusLine({ job, progress }) {
   );
 }
 
-export default function Backtests({ pollMs = 2000 }) {
+export default function Backtests({ pollMs = 2000, incoming = null }) {
   const initial = useRef(null);
   if (initial.current === null) initial.current = initialForm();
   const [f, setF] = useState(initial.current.form);
+  const [loadedFrom, setLoadedFrom] = useState('');
+  useEffect(() => {
+    if (!incoming) return;
+    // A structure from the strategy finder: same legs (as delta / $ offset rules) and DTE.
+    setF((cur) => requestToForm(incoming.request, cur));
+    setLoadedFrom(incoming.label || 'the strategy finder');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incoming?.nonce]);
   const [presetData, setPresetData] = useState(null);
   const [presetError, setPresetError] = useState(null);
   const [estimate, setEstimate] = useState(null);
@@ -216,6 +224,12 @@ export default function Backtests({ pollMs = 2000 }) {
       ) : null}
       <ErrorNote error={presetError} />
 
+      {loadedFrom ? (
+        <p className="note" role="status" data-testid="bt-loaded">
+          Loaded <b>{loadedFrom}</b> from the strategy finder: the same legs as delta and $-offset rules at the same
+          days to expiry, entered weekly over the last year. Adjust anything, then run.
+        </p>
+      ) : null}
       <form onSubmit={run} noValidate aria-label="Backtest configuration">
         <UnderlyingSection f={f} set={set} onRange={onRange} />
         <StrategySection f={f} presets={presets} onPreset={onPreset} setLegs={setLegs} set={set} />

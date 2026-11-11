@@ -9,11 +9,13 @@ import ChainViewer from './components/ChainViewer.jsx';
 import Coach from './components/Coach.jsx';
 import Compare from './components/Compare.jsx';
 import Screener from './components/Screener.jsx';
+import StrategyFinder from './components/StrategyFinder.jsx';
 import { DataStatus, ErrorNote } from './components/common.jsx';
 import './index.css';
 
 const TABS = [
   ['coach', 'Coach'],
+  ['finder', 'Find a strategy'],
   ['chain', 'Chains'],
   ['builder', 'Builder & payoff'],
   ['compare', 'Compare'],
@@ -25,6 +27,19 @@ const TABS = [
 export function Shell({ config, signOut }) {
   const [tab, setTab] = useState('coach');
   const [seed, setSeed] = useState(null);
+  const [position, setPosition] = useState(null); // a whole structure for the builder
+  const [incoming, setIncoming] = useState(null); // a backtest request
+  const [focus, setFocus] = useState(null); // a chain to open
+  const openFromFinder = (kind, c) => {
+    const nonce = Date.now();
+    if (kind === 'builder') { setPosition({ ...c.links.builder, label: c.name, nonce }); setTab('builder'); }
+    if (kind === 'backtest') { setIncoming({ request: c.links.backtest, label: c.name, nonce }); setTab('backtests'); }
+    if (kind === 'chain') {
+      setFocus({ ...c.links.chain, strikes: c.legs.filter((l) => l.strike).map((l) => l.strike), label: c.name, nonce });
+      setTab('chain');
+    }
+    window.scrollTo?.({ top: 0, behavior: 'smooth' });
+  };
   const refs = useRef({});
   const onKey = (e, i) => {
     const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
@@ -35,11 +50,17 @@ export function Shell({ config, signOut }) {
   };
   return (
     <div>
-      <header>
+      <header className="app-header">
         <div className="header-content">
-          <div>
-            <h1>Options Coach AI</h1>
-            <p>Options strategies, explained simply. Educational only; not investment advice.</p>
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2"
+                   strokeLinecap="round" strokeLinejoin="round"><path d="M3 17l5-5 4 4 8-9" /><path d="M14 7h6v6" /></svg>
+            </span>
+            <div>
+              <h1>Options Coach</h1>
+              <p className="brand-kicker">by MarketMosaic</p>
+            </div>
           </div>
           <div className="header-actions">
             <DataStatus status={config.market_data.data_status} label={config.market_data.label} provider={config.market_data.provider} />
@@ -62,15 +83,20 @@ export function Shell({ config, signOut }) {
           <div key={id} role="tabpanel" id={`panel-${id}`} aria-labelledby={`tab-${id}`} hidden={tab !== id}
                className={id === 'coach' ? '' : 'card'}>
             {id === 'coach' && <Coach />}
-            {id === 'chain' && tab === id && <ChainViewer onPick={(s) => { setSeed(s); setTab('builder'); }} />}
-            {id === 'builder' && <Builder seed={seed} />}
+            {id === 'finder' && <StrategyFinder onOpen={openFromFinder} />}
+            {id === 'chain' && tab === id && <ChainViewer focus={focus} onPick={(s) => { setSeed(s); setTab('builder'); }} />}
+            {id === 'builder' && <Builder seed={seed} position={position} />}
             {id === 'compare' && tab === id && <Compare />}
             {id === 'analytics' && tab === id && <Analytics />}
             {id === 'screener' && tab === id && <Screener />}
-            {id === 'backtests' && tab === id && <Backtests />}
+            {id === 'backtests' && tab === id && <Backtests incoming={incoming} />}
           </div>
         ))}
       </main>
+      <footer className="app-footer">
+        <p>Options Coach is for education and research only. Prices, payoffs and probabilities are calculations from
+          market data and stated assumptions, not recommendations or personalised investment advice.</p>
+      </footer>
     </div>
   );
 }
